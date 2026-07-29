@@ -8,4 +8,5 @@ dist/
 *.log
 submission/
 *.env
+architecture
 backend/.env
