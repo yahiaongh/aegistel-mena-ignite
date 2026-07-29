@@ -1,31 +1,26 @@
-version: '3.8'
-
 services:
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: aegistel_backend
     ports:
-      - "8000:8000"
-    environment:
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      - QDRANT_URL=${QDRANT_URL}
-      - QDRANT_API_KEY=${QDRANT_API_KEY}
-      - ADUNA_API_KEY=${ADUNA_API_KEY}
-      - NOKIA_NAC_API_KEY=${NOKIA_NAC_API_KEY}
+      - "8000:7860" # Map host 8000 -> container 7860
     env_file:
-      - ./backend/.env
-    restart: unless-stopped
+      - .env
+    environment:
+      - PORT=7860
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: aegistel_frontend
     ports:
       - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
     depends_on:
       - backend
-    restart: unless-stopped
