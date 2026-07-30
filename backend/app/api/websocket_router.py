@@ -1,8 +1,13 @@
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from app.agents.graph_orchestrator import aegis_graph
 import json
+from typing import Any, Dict
+
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+
+from app.agents.graph_orchestrator import execute_audit
+from app.schemas.telemetry import AuditRequest, LocationInput
 
 router = APIRouter()
+
 
 @router.websocket("/ws/orchestrate")
 async def websocket_orchestrate(websocket: WebSocket):
@@ -10,22 +15,26 @@ async def websocket_orchestrate(websocket: WebSocket):
     try:
         while True:
             data = await websocket.receive_text()
-            payload = json.loads(data)
-            
-            initial_state = {
-                "event_context": payload.get("event", "Default Transfer Check"),
-                "phone_number": payload.get("phone_number", "+213550000000"),
-                "security_clearance": False,
-                "sim_swap_detected": False,
-                "qod_slice_active": False,
-                "risk_score": 0.0,
-                "audit_memory_id": "",
-                "decision": "PENDING",
-                "trace_logs": []
-            }
-            
-            # Execute LangGraph Multi-Agent Stack
-            final_state = aegis_graph.invoke(initial_state)
-            await websocket.send_json(final_state)
+            payload: Dict[str, Any] = json.loads(data)
+
+            await websocket.send_json({"type": "connected", "message": "AegisTel telemetry stream started"})
+
+            request = AuditRequest(
+                msisdn=payload.get("msisdn") or payload.get("phone_number", "+213550000000"),
+                amount=float(payload.get("amount", 50000)),
+                transaction_type=payload.get("transaction_type", "WIRE_TRANSFER"),
+                current_location=LocationInput(
+                    latitude=float(payload.get("latitude", 24.7)),
+                    longitude=float(payload.get("longitude", 46.7)),
+                ),
+                request_qod_slice=bool(payload.get("request_qod_slice", True)),
+                metadata=payload.get("metadata", {}),
+            )
+
+            async def emit(event: Dict[str, Any]):
+                await websocket.send_json({"type": "audit_event", **event})
+
+            result = await execute_audit(request, stream=True, emit=emit)
+            await websocket.send_json({"type": "final_result", **result.model_dump(mode="json")})
     except WebSocketDisconnect:
         pass

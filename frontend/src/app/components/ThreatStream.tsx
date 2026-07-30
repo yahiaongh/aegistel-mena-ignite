@@ -13,9 +13,9 @@ interface ThreatEvent {
 }
 
 const MOCK_ATTACKS: ThreatEvent[] = [
-  { id: "EVT-809", location: "Riyadh Hub", msisdn: "+9999123456", amount: 50000, type: "SIM_SWAP_WIRE_FRAUD", severity: "CRITICAL" },
-  { id: "EVT-810", location: "Dubai Node", msisdn: "+9999876543", amount: 50000, type: "VIP_HIGH_VALUE_XFER", severity: "HIGH" },
-  { id: "EVT-811", location: "Cairo Tower", msisdn: "+9999123456", amount: 120000, type: "GEO_LOCATION_MISMATCH", severity: "CRITICAL" },
+  { id: "EVT-809", location: "Riyadh Hub", msisdn: "+99999123456", amount: 50000, type: "SIM_SWAP_WIRE_FRAUD", severity: "CRITICAL" },
+  { id: "EVT-810", location: "Dubai Node", msisdn: "+99999876543", amount: 50000, type: "VIP_HIGH_VALUE_XFER", severity: "HIGH" },
+  { id: "EVT-811", location: "Cairo Tower", msisdn: "+99999123456", amount: 120000, type: "GEO_LOCATION_MISMATCH", severity: "CRITICAL" },
 ];
 
 export default function ThreatStream({ onSelectThreat }: { onSelectThreat: (msisdn: string, amount: number) => void }) {

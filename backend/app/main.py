@@ -1,21 +1,26 @@
-# app/main.py
-import os
-import httpx
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from dotenv import load_dotenv
+import io
+from typing import Any, Dict
 
-from app.schemas.telemetry import AuditRequest, AuditResponse
+from dotenv import load_dotenv
+from fastapi import APIRouter, FastAPI, Form, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse
+
 from app.agents.graph_orchestrator import execute_audit
+from app.api.websocket_router import router as websocket_router
+from app.schemas.telemetry import AuditRequest, AuditResponse
 
 load_dotenv()
 
+try:
+    import edge_tts
+except Exception:
+    edge_tts = None
+
 app = FastAPI(
     title="AegisTel MENA Ignite API",
-    description="Autonomous Telecom Multi-Agent Fraud Engine using Nokia Network as Code",
-    version="1.0.0"
+    description="Autonomous Telecom Multi-Agent Fraud Engine using Nokia Network as Code CAMARA APIs",
+    version="2.0.0",
 )
 
 app.add_middleware(
@@ -24,64 +29,47 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
-class SynthesizeRequest(BaseModel):
-    text: str
+router = APIRouter(prefix="/api", tags=["AegisTel Core"])
 
-@app.post("/api/v1/audit", response_model=AuditResponse)
-async def audit_transaction(request: AuditRequest):
+
+@router.get("/health")
+async def health() -> Dict[str, Any]:
+    return {"status": "ok", "service": "AegisTel", "mode": "autonomous"}
+
+
+@router.post("/v1/audit", response_model=AuditResponse)
+async def audit_transaction(request: AuditRequest) -> AuditResponse:
+    """Executes the autonomous LangGraph workflow using Nokia NaC CAMARA APIs."""
     return await execute_audit(request)
 
-@app.post("/api/v1/synthesize-alert")
-async def synthesize_alert(req: SynthesizeRequest):
-    elevenlabs_api_key = os.getenv("ELEVENLABS_API_KEY")
-    if not elevenlabs_api_key:
-        raise HTTPException(
-            status_code=500,
-            detail="ELEVENLABS_API_KEY environment variable is missing."
+
+@router.post("/audio/tts")
+async def text_to_speech(
+    text: str = Form(...),
+    voice: str = Form("ar-EG-ShakirNeural"),
+    rate: str = Form("-5%"),
+    pitch: str = Form("-2Hz"),
+):
+    if edge_tts is None:
+        return JSONResponse(status_code=503, content={"detail": "TTS backend is unavailable in this environment"})
+    try:
+        communicate = edge_tts.Communicate(text=text, voice=voice, rate=rate, pitch=pitch)
+        audio_stream = io.BytesIO()
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                audio_stream.write(chunk["data"])
+        audio_stream.seek(0)
+        return StreamingResponse(
+            audio_stream,
+            media_type="audio/mpeg",
+            headers={"Content-Disposition": "attachment; filename=speech.mp3"},
         )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"TTS Error: {exc}") from exc
 
-    # Default to '21m00Tcm4TlvDq8ikWAM' (Rachel - universal premade voice)
-    voice_id = os.getenv("ELEVENLABS_VOICE_ID", "JBFqnCBsd6RMkjVDRZzb")
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"
 
-    headers = {
-        "Accept": "audio/mpeg",
-        "Content-Type": "application/json",
-        "xi-api-key": elevenlabs_api_key,
-    }
-
-    payload = {
-        "text": req.text,
-        "model_id": "eleven_multilingual_v2",
-    }
-
-    client = httpx.AsyncClient(timeout=30.0)
-
-    # 1. Inspect response status BEFORE starting the StreamingResponse stream
-    req_obj = client.build_request("POST", url, json=payload, headers=headers)
-    res = await client.send(req_obj, stream=True)
-
-    if res.status_code != 200:
-        error_body = await res.aread()
-        await res.aclose()
-        await client.aclose()
-        raise HTTPException(
-            status_code=res.status_code,
-            detail=f"ElevenLabs Error ({res.status_code}): {error_body.decode(errors='ignore')}"
-        )
-
-    # 2. Yield audio chunks safely
-    async def stream_generator():
-        try:
-            async for chunk in res.aiter_bytes():
-                yield chunk
-        finally:
-            await res.aclose()
-            await client.aclose()
-
-    return StreamingResponse(
-        stream_generator(),
-        media_type="audio/mpeg"
-    )
+app.include_router(router)
+app.include_router(websocket_router)

@@ -10,3 +10,4 @@ submission/
 *.env
 architecture
 backend/.env
+generate*
