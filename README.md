@@ -7,405 +7,224 @@ sdk: docker
 pinned: false
 app_port: 7860
 ---
-# AegisTel (GSMA MENA Ignite Hackathon)
-# 🛡️ AegisTel — Autonomous Telco-Aware AI Guard Engine
 
-> **GSMA MENA Ignite Hackathon 2026 Submission**
->
-> **Selected Theme:** Theme 7 — Open Innovation *(Cross-cutting: Fintech Security, Smart Cities & Pilgrimage / Emergency Services)*
+# AegisTel — Autonomous Telco-Aware AI Guard Engine
 
----
+> GSMA MENA Ignite Hackathon 2026 Submission  
+> Theme 7 — Open Innovation
 
-# 📌 Executive Summary
+## Executive summary
 
-**AegisTel** is an autonomous, event-driven AI middleware engine that bridges enterprise application logic with programmable 5G core networks through **GSMA CAMARA Open Gateway APIs**.
+AegisTel is an autonomous fraud and risk orchestration platform that turns telecom telemetry into real-time security decisions. It combines a FastAPI backend, a LangGraph-based agent workflow, deterministic specialist reasoning, and a polished Next.js demo dashboard to make telecom-aware fraud assessment understandable, explainable, and presentation-ready.
 
-Rather than treating telecommunications infrastructure as a passive transport layer, AegisTel transforms it into an intelligent security and orchestration platform capable of making autonomous policy decisions in real time.
+The platform is designed for hackathon-grade demos and submission readiness. It focuses on three principles that matter for the event:
 
-The platform ingests high-level enterprise events—such as:
-
-- 💳 Financial transfers
-- 🚑 Emergency dispatch requests
-- 🏙️ Smart city congestion alerts
-- 🔐 Identity verification requests
-
-It then coordinates multiple AI agents using **LangGraph** and **CrewAI** to:
-
-- analyze risk,
-- query telecom network intelligence,
-- execute CAMARA APIs,
-- and produce an explainable decision:
-
-- ✅ **ALLOW**
-- ❌ **BLOCK**
-- ⚠️ **ESCALATE**
+- Explainability: every decision has reasoning and an evidence trail.
+- Autonomy: the system selects and executes telecom checks end to end.
+- Resilience: a deterministic fallback path keeps the demo stable even when LLM providers are rate-limited.
 
 ---
 
-# 💡 Key Innovation
+## What changed in this iteration
 
-Traditional enterprise security relies on:
+The current version integrates the full live demo flow across backend and frontend:
 
-- SMS OTP authentication
-- Static network provisioning
-- Manual telecom integrations
-- Siloed fraud detection
-
-AegisTel replaces these with an **autonomous telecom-aware reasoning engine** capable of dynamically chaining multiple GSMA CAMARA APIs through:
-
-- Nokia Network-as-Code (NaC)
-- Aduna Global Platform
-
-This enables applications to make decisions based on **live telecommunications intelligence** rather than static application data.
+- A production-style LangGraph orchestrator now drives the evaluation workflow.
+- Specialist agents are part of the live reasoning path for:
+  - Security Specialist
+  - Network Intelligence Specialist
+  - Risk Auditor
+- Deterministic specialist synthesis ensures the backend remains explainable and stable even when Groq is unavailable.
+- The FastAPI backend exposes a browser-friendly audit route and a live evidence trail.
+- The Next.js frontend renders the verdict, telemetry, and agent trace in a polished Nokia NaC-style operator experience.
+- Memory-based incident recall and a structured audit response are now part of the end-to-end experience.
 
 ---
 
-# 🏗️ System Architecture
+## Why it matters
+
+Traditional fraud systems rely on static application context. AegisTel brings telecom intelligence into the decision loop by using CAMARA-style signals such as:
+
+- SIM swap detection
+- Location verification
+- Roaming status
+- Device reachability
+- QoD session handling
+
+This allows the platform to make fast, evidence-backed decisions for high-value or high-risk flows such as fintech transfers, emergency dispatch, and smart city safety events.
+
+---
+
+## Solution architecture
 
 ```mermaid
 graph TD
-    %% Styling
-    classDef client fill:#1e293b,stroke:#3b82f6,stroke-width:2px,color:#fff;
-    classDef agent fill:#0f172a,stroke:#00d2ff,stroke-width:2px,color:#fff;
-    classDef tool fill:#102440,stroke:#1e90ff,stroke-width:2px,color:#fff;
-    classDef telco fill:#0a192f,stroke:#10b981,stroke-width:2px,color:#fff;
+    Client["Enterprise App / Demo UI"] --> API["FastAPI Gateway"]
+    API --> Orchestrator["LangGraph Orchestrator"]
+    Orchestrator --> Security["Security Specialist"]
+    Orchestrator --> Network["Network Intelligence Specialist"]
+    Orchestrator --> Auditor["Risk Auditor"]
 
-    subgraph Trigger Layer
-        ClientApp["Enterprise App / Emergency Dispatch / Fintech Platform"]:::client
-    end
+    Security --> Telecom["Nokia NaC / CAMARA-style Telemetry"]
+    Network --> Telecom
+    Auditor --> Memory["Incident Memory"]
 
-    subgraph Multi-Agent Guard Stack
-        Gateway["FastAPI Gateway / WebSocket Streamer"]:::agent
-        Orchestrator["LangGraph State Engine"]:::agent
-
-        subgraph Specialist Agents
-            SecGuard["CrewAI Security Specialist"]:::tool
-            QoDAgent["CrewAI QoD Specialist"]:::tool
-            Auditor["Gemini Auditor + Memory"]:::tool
-        end
-    end
-
-    subgraph Data
-        Qdrant[("Qdrant Cloud")]:::tool
-    end
-
-    subgraph Telecom
-        CAMARA["Nokia NaC / Aduna CAMARA APIs"]:::telco
-        Core5G["5G Core"]:::telco
-    end
-
-    ClientApp --> Gateway
-    Gateway --> Orchestrator
-    Orchestrator --> SecGuard
-    Orchestrator --> QoDAgent
-    Orchestrator --> Auditor
-
-    SecGuard --> CAMARA
-    QoDAgent --> CAMARA
-    Auditor --> Qdrant
-
-    CAMARA --> Core5G
-
-    Orchestrator --> ClientApp
+    Orchestrator --> UI["Next.js Operator Dashboard"]
 ```
 
----
+### Core components
 
-# 🛠️ Integrated GSMA CAMARA APIs
-
-| CAMARA API | Purpose | AI Agent Action |
-|------------|---------|-----------------|
-| **SIM Swap Detection** | Detects recent SIM swaps | Prevent account takeover before approving transactions |
-| **Number Verification** | Silent carrier verification | Eliminates insecure SMS OTP authentication |
-| **Quality on Demand (QoD)** | Dynamic 5G QoS provisioning | Creates dedicated low-latency slices for mission-critical traffic |
-| **Location Verification** | Cell-based geofence validation | Confirms physical presence of the requesting device |
-| **Congestion Insights** | Live cellular congestion monitoring | Supports smart city routing and crowd management |
-| **Device Reachability** | Connectivity & roaming status | Verifies device availability before policy execution |
+- Backend: Python, FastAPI, LangGraph, Pydantic
+- Agent reasoning: deterministic specialist synthesis + optional Groq-based planning
+- Frontend: Next.js, TypeScript, Tailwind-inspired UI, live evidence presentation
+- Memory: incident recall for fraud pattern correlation
 
 ---
 
-# ⚡ Multi-Agent Orchestration
+## Demo workflow
 
-```mermaid
-sequenceDiagram
-    autonumber
+1. The user submits a transaction request with MSISDN, amount, location, and QoD preference.
+2. The orchestrator selects the relevant telecom checks.
+3. Tool outputs are normalized into specialist assessments.
+4. The system returns a structured result: status, risk score, reasoning, recommendation, and evidence trail.
+5. The UI displays the verdict and the live trace for the operator.
 
-    participant App as Enterprise Application
-    participant LG as LangGraph
-    participant Sec as Security Agent
-    participant QoD as QoD Agent
-    participant Aud as Risk Auditor
-    participant Mem as Qdrant
-    participant Tel as CAMARA APIs
+### Example demo scenario
 
-    App->>LG: Transfer Request ($20,000)
+A sample number such as +99999991000 triggers the expected high-risk signals in the sandbox path, including:
 
-    LG->>Sec: SIM Swap + Number Verification
-    Sec->>Tel: /sim-swap
-    Sec->>Tel: /number-verification
-    Tel-->>Sec: Secure
-
-    LG->>QoD: Evaluate QoS
-    QoD->>Tel: /qod/session
-    Tel-->>QoD: Session Active
-
-    LG->>Aud: Threat Correlation
-    Aud->>Mem: Query Memory
-    Mem-->>Aud: No Threat History
-
-    Aud-->>LG: Risk Score = 0.05
-
-    LG-->>App: Decision = ALLOW
-```
+- recent SIM swap evidence
+- failed location verification
+- roaming context
+- QoD step-up recommendation
 
 ---
 
-# 🤖 AI Stack
-
-## LangGraph
-
-Responsible for:
-
-- Stateful workflow execution
-- Branching logic
-- Parallel agent coordination
-- Failure recovery
-- Decision orchestration
-
----
-
-## CrewAI
-
-Provides specialized autonomous agents:
-
-- Security Specialist
-- QoD Specialist
-- Risk Auditor
-
-Each agent has independent:
-
-- goals
-- tools
-- prompts
-- responsibilities
-
----
-
-## Groq (Llama-3.3-70B)
-
-Used for:
-
-- ultra-low latency reasoning
-- CAMARA API selection
-- telecom decision making
-- tool calling
-
----
-
-## Gemini 2.5 Pro
-
-Responsible for:
-
-- contextual reasoning
-- audit generation
-- policy explanation
-- threat correlation
-
----
-
-## Mem0 + Qdrant Cloud
-
-Persistent long-term memory storing:
-
-- historical fraud attempts
-- telecom events
-- security incidents
-- previous policy decisions
-
----
-
-# 📂 Project Structure
+## Project structure
 
 ```text
 aegistel-mena-ignite/
-│
 ├── backend/
 │   ├── app/
-│   │
-│   ├── agents/
-│   │   ├── state.py
-│   │   ├── crew_specialists.py
-│   │   ├── memory_agent.py
-│   │   └── graph_orchestrator.py
-│   │
-│   ├── api/
-│   │   └── websocket_router.py
-│   │
-│   ├── core/
-│   │   └── config.py
-│   │
-│   ├── services/
-│   │   ├── aduna_service.py
-│   │   └── nac_service.py
-│   │
-│   └── main.py
-│
+│   │   ├── agents/
+│   │   │   ├── crew_specialists.py
+│   │   │   ├── graph_orchestrator.py
+│   │   │   ├── memory_agent.py
+│   │   │   └── tools.py
+│   │   ├── api/
+│   │   │   └── websocket_router.py
+│   │   ├── core/
+│   │   │   └── config.py
+│   │   ├── schemas/
+│   │   │   └── telemetry.py
+│   │   └── main.py
+│   └── tests/
+│       └── test_orchestrator.py
 ├── frontend/
-│
+│   └── src/app
 ├── docker-compose.yml
-├── Dockerfile
-├── requirements.txt
-│
+├── generate_audio.py
 ├── generate_doc.py
 ├── generate_ppt.py
-│
 └── README.md
 ```
 
 ---
 
-# 🚀 Quick Start
+## Local development
 
-## Prerequisites
+### Prerequisites
 
-- Docker
-- Docker Compose
+- Docker and Docker Compose
 - Python 3.12+
 - Node.js 18+
 
----
+### Backend
 
-## 1. Configure Environment
-
-Create:
-
-```text
-backend/.env
+```bash
+cd backend
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+PYTHONPATH=. uvicorn app.main:app --reload
 ```
 
-```env
-GROQ_API_KEY=your_groq_api_key
+### Frontend
 
-GOOGLE_API_KEY=your_gemini_api_key
-
-QDRANT_URL=https://your-cluster.qdrant.tech
-QDRANT_API_KEY=your_qdrant_api_key
-
-ADUNA_API_KEY=your_aduna_api_key
-
-NOKIA_NAC_API_KEY=your_nokia_nac_key
+```bash
+cd frontend
+npm install
+npm run dev
 ```
 
----
-
-## 2. Launch
+### Docker
 
 ```bash
 docker-compose up --build -d
 ```
 
----
+### Useful URLs
 
-## Available Services
-
-| Service | URL |
-|----------|-----|
-| Frontend Dashboard | http://localhost:3000 |
-| FastAPI Documentation | http://localhost:8000/docs |
-| WebSocket Trace | ws://localhost:8000/ws/orchestrate |
+- Frontend dashboard: http://localhost:3000
+- FastAPI docs: http://localhost:8000/docs
+- WebSocket route: ws://localhost:8000/ws/orchestrate
 
 ---
 
-# 🎯 Example Workflow
+## Verification status
 
-1. Enterprise application sends a transaction request.
+The current implementation has been validated with fresh checks:
 
-2. LangGraph starts the orchestration pipeline.
-
-3. Security Agent checks:
-
-   - SIM Swap
-   - Number Verification
-
-4. QoD Agent provisions a dedicated 5G session if necessary.
-
-5. Auditor queries historical memory.
-
-6. Risk score is computed.
-
-7. Final decision is returned:
-
-- ✅ Allow
-- ❌ Block
-- ⚠️ Escalate
+- Backend regression tests: 4 passed
+- Frontend production build: completed successfully
 
 ---
 
-# 🌍 Example Use Cases
+## Use cases
 
-### 💳 Fintech
+### Fintech security
 
 - Fraud prevention
 - Secure transaction approval
-- Silent user verification
+- Telecom-backed transaction assurance
 
----
+### Emergency services
 
-### 🚑 Emergency Services
+- Guaranteed QoS for critical communications
+- Low-latency dispatch workflows
+- Reliable operator coordination
 
-- Guaranteed QoS
-- Low-latency dispatch
-- Reliable responder communications
+### Smart cities and pilgrimage
 
----
-
-### 🕌 Pilgrimage & Smart Cities
-
-- Crowd density monitoring
-- Intelligent routing
+- Crowd-aware routing
 - Public safety automation
+- Telecom-contextual decisioning
 
 ---
 
-### 🏢 Enterprise Security
+## Security and trust
 
-- Telecom-aware Zero Trust
-- Network intelligence
-- Device verification
+AegisTel emphasizes explainable decisioning and operator transparency:
 
----
-
-# 🔒 Security Features
-
-- SIM Swap Detection
-- Silent Number Verification
-- Telecom Identity Validation
-- AI Risk Scoring
-- Persistent Threat Memory
-- Explainable Decisions
-- Event Audit Trails
-- WebSocket Live Execution Trace
+- SIM swap detection
+- Location verification
+- Roaming awareness
+- Reachability checks
+- QoD-assisted escalation
+- Structured evidence trails
 
 ---
 
-# 👨‍💻 Team
+## Team
 
-**Yahia Abdeldjalil**
-
+**Yahia Abdeldjalil**  
 Lead AI Systems & Telecom Infrastructure Engineer
 
-📧 Email: **yahia@aegistel.ai**
-
 ---
 
-# 📦 Repository
+## License
 
-```
-github.com/yahiaongh/aegistel-mena-ignite
-```
-
----
-
+Hackathon submission for GSMA MENA Ignite 2026.
 # 📜 License
 
 Hackathon Submission — GSMA MENA Ignite 2026.
