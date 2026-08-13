@@ -1,0 +1,20 @@
+# backend/app/core/constants.py
+ISO_COUNTRY_NAMES = {
+    "HU": "Hungary",
+    "US": "the United States",
+    "GB": "the United Kingdom",
+    "SA": "Saudi Arabia",
+    "AE": "the United Arab Emirates",
+    "EG": "Egypt",
+    "TR": "Turkiye",
+    "QA": "Qatar",
+    "KW": "Kuwait",
+    "BH": "Bahrain",
+    "OM": "Oman",
+    "JO": "Jordan",
+    "FR": "France",
+    "DE": "Germany",
+    "IT": "Italy",
+    "ES": "Spain",
+    "NL": "the Netherlands",
+}

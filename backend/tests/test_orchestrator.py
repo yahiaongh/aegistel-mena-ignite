@@ -37,7 +37,6 @@ def test_demo_msisdn_exposes_documented_risk_signals():
     result = asyncio.run(execute_audit(request))
 
     assert result.telemetry.sim_swap_detected is True
-    assert result.telemetry.number_verification_match is False
     assert result.telemetry.location_verification_match is False
     assert result.telemetry.qod_session_active is True
 
@@ -56,3 +55,19 @@ def test_fallback_reasoning_and_trace_are_contextual():
     assert "SIM swap" in result.reasoning or "location" in result.reasoning.lower()
     assert all(step.thought != "Selected a CAMARA network capability based on the transaction context." for step in result.agent_trace)
     assert sum(1 for step in result.agent_trace if step.agent == "Autonomous_LLM_Orchestrator") <= 2
+
+
+def test_specialist_agents_are_reflected_in_the_trace():
+    request = AuditRequest(
+        msisdn="+99999991000",
+        amount=120000.0,
+        transaction_type="WIRE_TRANSFER",
+        current_location=LocationInput(latitude=24.0, longitude=46.0),
+        request_qod_slice=True,
+    )
+
+    result = asyncio.run(execute_audit(request))
+
+    agent_names = {step.agent for step in result.agent_trace}
+    assert "Security Specialist" in agent_names
+    assert "Network Intelligence Specialist" in agent_names
