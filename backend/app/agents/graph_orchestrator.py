@@ -209,7 +209,7 @@ async def execute_audit(request: AuditRequest) -> AuditResponse:
             assessment.risk_score, "MEDIUM"
         ),
         confidence=_compute_confidence(tool_results),
-        cross_border_risk=bool(memory_context) or assessment.roaming_status == "INTERNATIONAL_ROAMING",
+        cross_border_risk=assessment.roaming_status == "INTERNATIONAL_ROAMING",
     )
     memory_engine.record_incident(
         request.msisdn,

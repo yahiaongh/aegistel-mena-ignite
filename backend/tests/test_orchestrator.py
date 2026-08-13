@@ -71,3 +71,31 @@ def test_specialist_agents_are_reflected_in_the_trace():
     agent_names = {step.agent for step in result.agent_trace}
     assert "Security Specialist" in agent_names
     assert "Network Intelligence Specialist" in agent_names
+
+
+def test_cross_border_risk_requires_actual_roaming_not_memory():
+    # Memory alone must not flag cross-border risk: a clean domestic audit with
+    # prior incident history should report cross_border_risk=False, since the
+    # field now reflects the live roaming telemetry only.
+    from app.agents.memory_agent import memory_engine
+
+    memory_engine.clear_all_memory()
+    memory_engine.record_incident(
+        "+99999991001",
+        "past domestic incident",
+        {"status": "BLOCKED", "risk_score": "HIGH"},
+    )
+
+    request = AuditRequest(
+        msisdn="+99999991001",
+        amount=1000.0,
+        transaction_type="WIRE_TRANSFER",
+        current_location=LocationInput(latitude=24.7, longitude=46.7),
+        request_qod_slice=False,
+    )
+
+    result = asyncio.run(execute_audit(request))
+
+    assert result.telemetry.roaming_status == "DOMESTIC"
+    assert result.telemetry.cross_border_risk is False
+    memory_engine.clear_all_memory()
