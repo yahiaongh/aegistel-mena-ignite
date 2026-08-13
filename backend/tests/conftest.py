@@ -9,6 +9,15 @@ load_dotenv(dotenv_path=ROOT_ENV_FILE, override=False)
 
 
 @pytest.fixture(autouse=True)
+def reset_provider_cooldown():
+    from app.agents import crew_specialists
+
+    crew_specialists._PROVIDER_COOLDOWN.clear()
+    yield
+    crew_specialists._PROVIDER_COOLDOWN.clear()
+
+
+@pytest.fixture(autouse=True)
 def patch_nokia_sdk(monkeypatch):
     from app.agents import tools as tool_module
 

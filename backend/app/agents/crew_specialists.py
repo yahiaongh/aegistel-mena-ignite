@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 import warnings
 from typing import Any, Dict, List
 
@@ -26,19 +27,28 @@ try:
 except Exception:
     litellm = None
 
+# Fast, reliable free-tier models are preferred first. Rate-limited providers
+# (e.g. an exhausted Gemini free-tier quota) are skipped via _PROVIDER_COOLDOWN
+# so a request never burns a ~26s retry or a ~6.6s native-provider import on a
+# model that is known to be unavailable.
 MODEL_CHAIN = {
     "specialist": [
         "groq/llama-3.3-70b-versatile",
         "groq/llama-3.1-8b-instant",
-        f"gemini/{settings.GEMINI_MODEL}",
         "openrouter/openai/gpt-4o-mini",
+        f"gemini/{settings.GEMINI_MODEL}",
     ],
     "auditor": [
-        f"gemini/{settings.GEMINI_MODEL}",
         "groq/llama-3.1-8b-instant",
         "openrouter/openai/gpt-4o-mini",
+        f"gemini/{settings.GEMINI_MODEL}",
     ],
 }
+
+# In-process record of models that recently hit a rate-limit/quota error, and
+# the earliest wall-clock timestamp at which retrying them makes sense.
+_PROVIDER_COOLDOWN: Dict[str, float] = {}
+_PROVIDER_COOLDOWN_WINDOW_S = 60.0
 
 VALID_STATUSES = {"APPROVED", "REJECTED", "BLOCKED", "STEP_UP_REQUIRED", "MANUAL_REVIEW"}
 VALID_RISK_SCORES = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
@@ -484,6 +494,19 @@ def _model_provider_available(model: str) -> bool:
     return False
 
 
+def _model_in_cooldown(model: str) -> bool:
+    expiry = _PROVIDER_COOLDOWN.get(model, 0.0)
+    if expiry > 0.0 and expiry > time.monotonic():
+        return True
+    if expiry > 0.0 and expiry <= time.monotonic():
+        _PROVIDER_COOLDOWN.pop(model, None)
+    return False
+
+
+def _mark_model_cooldown(model: str) -> None:
+    _PROVIDER_COOLDOWN[model] = time.monotonic() + _PROVIDER_COOLDOWN_WINDOW_S
+
+
 def _model_provider_name(model: str) -> str:
     if model.startswith("groq/"):
         return "Groq"
@@ -595,23 +618,33 @@ def run_specialist_crew(
         geofence_radius_meters = 5000
     enforce_roaming_policy = bool(metadata.get("enforce_roaming_policy"))
 
-    executed_tool_results: List[Dict[str, Any]] = []
-    executed_tool_results.append(_run_tool_payload("check_sim_swap", check_sim_swap, msisdn=msisdn))
-    logger.info("verify_location called with radius=%s for msisdn=%s", geofence_radius_meters, msisdn)
-    executed_tool_results.append(
-        _run_tool_payload(
+    from concurrent.futures import ThreadPoolExecutor
+
+    # The telemetry tools are independent SDK calls. Running them concurrently
+    # removes the serial latency without changing which tools run.
+    jobs: List[tuple[str, Any]] = [
+        ("check_sim_swap", lambda: _run_tool_payload("check_sim_swap", check_sim_swap, msisdn=msisdn)),
+        (
             "verify_location",
-            verify_location,
-            msisdn=msisdn,
-            latitude=latitude,
-            longitude=longitude,
-            radius=geofence_radius_meters,
-        )
-    )
-    executed_tool_results.append(_run_tool_payload("check_roaming_status", check_roaming_status, msisdn=msisdn))
+            lambda: _run_tool_payload(
+                "verify_location",
+                verify_location,
+                msisdn=msisdn,
+                latitude=latitude,
+                longitude=longitude,
+                radius=geofence_radius_meters,
+            ),
+        ),
+        ("check_roaming_status", lambda: _run_tool_payload("check_roaming_status", check_roaming_status, msisdn=msisdn)),
+        ("check_device_reachability", lambda: _run_tool_payload("check_device_reachability", check_device_reachability, msisdn=msisdn)),
+    ]
     if amount >= 25000 or request_qod:
-        executed_tool_results.append(_run_tool_payload("create_qod_session", create_qod_session, msisdn=msisdn))
-    executed_tool_results.append(_run_tool_payload("check_device_reachability", check_device_reachability, msisdn=msisdn))
+        jobs.append(("create_qod_session", lambda: _run_tool_payload("create_qod_session", create_qod_session, msisdn=msisdn)))
+
+    logger.info("verify_location called with radius=%s for msisdn=%s", geofence_radius_meters, msisdn)
+    with ThreadPoolExecutor(max_workers=len(jobs)) as _pool:
+        _futures = [(_name, _pool.submit(_fn)) for _name, _fn in jobs]
+        executed_tool_results = [(_fut[1].result()) for _fut in _futures]
 
     deterministic_output = synthesize_specialist_assessment(
         request_context,
@@ -639,8 +672,21 @@ def run_specialist_crew(
             "used_fallback": True,
         }
 
-    supported_specialist_models = [model for model in MODEL_CHAIN["specialist"] if _model_provider_available(model)]
-    supported_auditor_models = [model for model in MODEL_CHAIN["auditor"] if _model_provider_available(model)]
+    supported_specialist_models = [
+        model for model in MODEL_CHAIN["specialist"]
+        if _model_provider_available(model) and not _model_in_cooldown(model)
+    ]
+    supported_auditor_models = [
+        model for model in MODEL_CHAIN["auditor"]
+        if _model_provider_available(model) and not _model_in_cooldown(model)
+    ]
+    if not supported_specialist_models:
+        # Every configured model is in cooldown (all rate-limited). Lift the
+        # cooldown so a provider can serve this request instead of failing
+        # straight to the deterministic fallback.
+        _PROVIDER_COOLDOWN.clear()
+        supported_specialist_models = [model for model in MODEL_CHAIN["specialist"] if _model_provider_available(model)]
+        supported_auditor_models = [model for model in MODEL_CHAIN["auditor"] if _model_provider_available(model)]
     if not supported_specialist_models or not supported_auditor_models:
         logger.warning("Insufficient provider-backed models for specialist/auditor workflow; using deterministic specialist fallback")
         return {
@@ -804,6 +850,9 @@ def run_specialist_crew(
         except Exception as exc:
             last_error = exc
             if _is_rate_limit_or_availability_error(exc) or _is_crew_tool_validation_error(exc):
+                if _is_rate_limit_or_availability_error(exc):
+                    _mark_model_cooldown(specialist_model)
+                    _mark_model_cooldown(auditor_model)
                 logger.warning("CrewAI model chain hit retryable/fallback-worthy error with %s/%s: %s", specialist_model, auditor_model, exc)
             else:
                 logger.warning("CrewAI specialist workflow failed unexpectedly for %s/%s; trying next model pair: %s", specialist_model, auditor_model, exc)
