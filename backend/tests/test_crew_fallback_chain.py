@@ -197,14 +197,15 @@ def test_model_chain_retries_each_supported_model_once(monkeypatch):
     assert result["assessment"]["status"] == "APPROVED"
     attempted = [model for _, model in calls if _ == "agent"]
     # With Groq keys absent, the reordered chain prefers the fast reliable
-    # provider (OpenRouter) before falling back to the rate-limit-prone Gemini.
+    # provider (OpenRouter), then the high-headroom Gemini flash-lite tier,
+    # before falling back to the rate-limit-prone configured flash model.
     assert attempted == [
         "openrouter/openai/gpt-4o-mini",
         "openrouter/openai/gpt-4o-mini",
         "openrouter/openai/gpt-4o-mini",
-        "gemini/gemini-flash-latest",
-        "gemini/gemini-flash-latest",
-        "gemini/gemini-flash-latest",
+        "gemini/gemini-3.5-flash-lite",
+        "gemini/gemini-3.5-flash-lite",
+        "gemini/gemini-3.5-flash-lite",
     ]
 
 

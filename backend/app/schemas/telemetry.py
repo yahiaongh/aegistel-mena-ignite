@@ -33,6 +33,7 @@ class ToolCallResult(BaseModel):
     name: str
     success: bool
     source: str
+    duration_ms: Optional[float] = None
     payload: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -79,3 +80,4 @@ class AuditResponse(BaseModel):
     recommended_action: str
     agent_trace: List[AgentTraceItem] = Field(default_factory=list)
     used_fallback: bool = False
+    raw_output: Optional[str] = None

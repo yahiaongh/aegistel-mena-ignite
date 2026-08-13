@@ -5,7 +5,8 @@ import logging
 import re
 import time
 import warnings
-from typing import Any, Dict, List
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Callable, Dict, List, Optional
 
 from crewai import Agent, Crew, Task
 
@@ -33,16 +34,28 @@ except Exception:
 # (e.g. an exhausted Gemini free-tier quota) are skipped via _PROVIDER_COOLDOWN
 # so a request never burns a ~26s retry or a ~6.6s native-provider import on a
 # model that is known to be unavailable.
+#
+# Free-tier headroom (2026, same providers as the guide):
+#   groq/llama-3.3-70b-versatile       100k tokens/day (quality primary)
+#   groq/llama-3.1-8b-instant          500k tokens/day (volume tier)
+#   gemini/gemini-3.5-flash-lite       ~1,000 req/day (per-model bucket,
+#                                      independent of the flash model's ~20/day)
+#   gemini/<configured flash>          quality tier, tightest daily cap
+# Cooldowns honor each provider's own retry hint, and daily-quota errors put
+# the model out of play until the nightly reset instead of retrying every 60s.
+_GEMINI_HIGH_HEADROOM_MODEL = "gemini-3.5-flash-lite"
 MODEL_CHAIN = {
     "specialist": [
         "groq/llama-3.3-70b-versatile",
         "groq/llama-3.1-8b-instant",
         "openrouter/openai/gpt-4o-mini",
+        f"gemini/{_GEMINI_HIGH_HEADROOM_MODEL}",
         f"gemini/{settings.GEMINI_MODEL}",
     ],
     "auditor": [
         "groq/llama-3.1-8b-instant",
         "openrouter/openai/gpt-4o-mini",
+        f"gemini/{_GEMINI_HIGH_HEADROOM_MODEL}",
         f"gemini/{settings.GEMINI_MODEL}",
     ],
 }
@@ -583,7 +596,7 @@ def _reconcile_crew_output(parsed_output: Dict[str, Any], deterministic_output: 
 
 def _is_rate_limit_or_availability_error(exc: Exception) -> bool:
     text = str(exc).lower()
-    return any(marker in text for marker in ("429", "rate_limit", "quota", "no longer available", "temporarily unavailable", "service unavailable", "overloaded"))
+    return any(marker in text for marker in ("429", "402", "rate_limit", "rate limit", "quota", "insufficient credits", "no longer available", "temporarily unavailable", "service unavailable", "overloaded", "resource_exhausted"))
 
 
 def _is_crew_tool_validation_error(exc: Exception) -> bool:
@@ -612,8 +625,59 @@ def _model_in_cooldown(model: str) -> bool:
     return False
 
 
-def _mark_model_cooldown(model: str) -> None:
-    _PROVIDER_COOLDOWN[model] = time.monotonic() + _PROVIDER_COOLDOWN_WINDOW_S
+def _mark_model_cooldown(model: str, exc: Optional[Exception] = None) -> None:
+    _PROVIDER_COOLDOWN[model] = time.monotonic() + _cooldown_window_from_error(exc)
+
+
+def _mark_failed_models(specialist_model: str, auditor_model: str, exc: Optional[Exception] = None) -> None:
+    """Cooldown only the models implicated by the failure so a healthy partner
+    in the pair is not poisoned and dragged out of the chain. Falls back to
+    provider-level matching (e.g. OpenRouter credit errors), then to the whole
+    pair when the error carries no identifying signal."""
+    text = str(exc or "")
+    models = [specialist_model, auditor_model]
+    matched = [model for model in models if model.split("/")[-1] in text]
+    if not matched:
+        matched = [model for model in models if model.split("/", 1)[0] in text]
+    if not matched:
+        matched = models
+    for model in matched:
+        _mark_model_cooldown(model, exc)
+
+
+def _cooldown_window_from_error(exc: Optional[Exception]) -> float:
+    """Honor the provider's own retry hint; daily-quota errors (TPD / free-tier
+    per-model request caps) reset on the provider's schedule, so park the model
+    until the next nightly reset instead of retrying within seconds."""
+    if exc is None:
+        return _PROVIDER_COOLDOWN_WINDOW_S
+    text = str(exc).lower()
+    window = _PROVIDER_COOLDOWN_WINDOW_S
+    match = re.search(r"try again in (\d+)m([\d.]+)?s?", text)
+    if match:
+        window = float(match.group(1)) * 60.0 + float(match.group(2) or 0.0)
+    else:
+        match = re.search(r"retrydelay[\"':=\s]+([\d.]+)", text)
+        if match:
+            window = float(match.group(1))
+        else:
+            match = re.search(r"(?:try again|retry) in ([\d.]+)s", text)
+            if match:
+                window = float(match.group(1))
+    daily_cap_markers = (
+        "tokens per day",
+        "tpdamount",
+        "requests per day",
+        "rpdamount",
+        "perdayperproject",
+        "free tier",
+        "free-tier",
+        "generatecontentfree",
+        "credits",
+    )
+    if any(marker in text for marker in daily_cap_markers):
+        window = max(window, 6 * 3600.0)
+    return min(window, 12 * 3600.0)
 
 
 def _model_provider_name(model: str) -> str:
@@ -708,8 +772,28 @@ def run_specialist_crew(
     request_context: Dict[str, Any],
     memory_context: List[Dict[str, Any]],
     tool_results: List[Dict[str, Any]],
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    llm_time_budget_s: float = 75.0,
 ) -> Dict[str, Any]:
-    """Run a real CrewAI specialist workflow and fall back to deterministic synthesis on errors."""
+    """Run a real CrewAI specialist workflow and fall back to deterministic synthesis on errors.
+
+    When `progress_callback` is provided, it is invoked (from any thread) with
+    small JSON-serializable event dicts so a streaming transport can animate the
+    pipeline: tool executions, deterministic synthesis, and LLM layer activity.
+
+    `llm_time_budget_s` caps the wall-clock time spent on the LLM CrewAI chain
+    (model-pair retries burn minutes when providers are rate-limited). When the
+    budget expires the crew hard-falls back to the deterministic engine, so
+    callers (audit stream, drill) always complete inside their own deadlines.
+    """
+    def _emit(event_type: str, **payload: Any) -> None:
+        if progress_callback is None:
+            return
+        try:
+            progress_callback({"type": event_type, **payload})
+        except Exception:
+            logger.exception("Progress callback failed for event %s", event_type)
+
     msisdn = request_context.get("msisdn", "")
     amount = float(request_context.get("amount", 0.0))
     longitude = float(request_context.get("longitude", 46.7))
@@ -754,9 +838,25 @@ def run_specialist_crew(
     ]
 
     logger.info("verify_location called with radius=%s for msisdn=%s", geofence_radius_meters, msisdn)
+    _emit("tools:start", count=len(jobs))
     with ThreadPoolExecutor(max_workers=len(jobs)) as _pool:
         _futures = [(_name, _pool.submit(_fn)) for _name, _fn in jobs]
-        executed_tool_results = [(_fut[1].result()) for _fut in _futures]
+        executed_tool_results = []
+        for _name, _fut in _futures:
+            started = time.monotonic()
+            _payload = _fut.result()
+            duration_ms = round((time.monotonic() - started) * 1000, 1)
+            if isinstance(_payload, dict):
+                _payload = dict(_payload)
+                _payload["duration_ms"] = duration_ms
+            executed_tool_results.append(_payload)
+            _emit(
+                "tool:done",
+                tool=_name,
+                source=_payload.get("source", "unknown") if isinstance(_payload, dict) else "unknown",
+                status="ok" if isinstance(_payload, dict) and _payload.get("status_code", 200) < 400 else "error",
+                duration_ms=duration_ms,
+            )
 
     # Pre-compute the deterministic risk signal from the base telemetry so the
     # QoD decision can react to actual risk (auto-provision on risk), not just
@@ -768,9 +868,17 @@ def run_specialist_crew(
         enforce_roaming_policy=enforce_roaming_policy,
     )
     risk_signal = risk_scan["assessment"].get("status") != "APPROVED"
+    _emit(
+        "synthesis:done",
+        status=risk_scan["assessment"].get("status"),
+        risk_score=risk_scan["assessment"].get("risk_score"),
+        signal_count=len(risk_scan.get("trace", [])),
+    )
 
     if amount >= 25000 or request_qod or risk_signal:
+        _emit("qod:start", reason="amount_threshold" if amount >= 25000 else ("risk_signal" if risk_signal else "explicit_request"))
         executed_tool_results.append(_run_tool_payload("create_qod_session", create_qod_session, msisdn=msisdn))
+        _emit("qod:done", status="ok")
 
     deterministic_output = synthesize_specialist_assessment(
         request_context,
@@ -792,6 +900,13 @@ def run_specialist_crew(
     )
     if force_deterministic or not provider_available:
         logger.warning("Using deterministic specialist fallback for crew workflow")
+        _emit("llm:fallback", reason="no_provider_credentials" if not provider_available else "forced_deterministic")
+        _emit(
+            "crew:done",
+            status=deterministic_output["assessment"].get("status"),
+            risk_score=deterministic_output["assessment"].get("risk_score"),
+            used_fallback=True,
+        )
         return {
             "assessment": deterministic_output["assessment"],
             "tool_results": executed_tool_results,
@@ -800,23 +915,38 @@ def run_specialist_crew(
             "used_fallback": True,
         }
 
-    supported_specialist_models = [
-        model for model in MODEL_CHAIN["specialist"]
-        if _model_provider_available(model) and not _model_in_cooldown(model)
-    ]
-    supported_auditor_models = [
-        model for model in MODEL_CHAIN["auditor"]
-        if _model_provider_available(model) and not _model_in_cooldown(model)
-    ]
-    if not supported_specialist_models:
+    def _available_models() -> tuple[list[str], list[str]]:
+        return (
+            [model for model in MODEL_CHAIN["specialist"] if _model_provider_available(model) and not _model_in_cooldown(model)],
+            [model for model in MODEL_CHAIN["auditor"] if _model_provider_available(model) and not _model_in_cooldown(model)],
+        )
+
+    def _build_available_pairs() -> List[tuple[str, str]]:
+        supported_specialist_models, supported_auditor_models = _available_models()
+        pairs: List[tuple[str, str]] = []
+        for idx in range(max(len(supported_specialist_models), len(supported_auditor_models))):
+            specialist_model = supported_specialist_models[idx] if idx < len(supported_specialist_models) else supported_specialist_models[-1]
+            auditor_model = supported_auditor_models[idx] if idx < len(supported_auditor_models) else supported_auditor_models[-1]
+            if (specialist_model, auditor_model) not in pairs:
+                pairs.append((specialist_model, auditor_model))
+        return pairs
+
+    fallback_model_pairs = _build_available_pairs()
+    if not fallback_model_pairs:
         # Every configured model is in cooldown (all rate-limited). Lift the
         # cooldown so a provider can serve this request instead of failing
         # straight to the deterministic fallback.
         _PROVIDER_COOLDOWN.clear()
-        supported_specialist_models = [model for model in MODEL_CHAIN["specialist"] if _model_provider_available(model)]
-        supported_auditor_models = [model for model in MODEL_CHAIN["auditor"] if _model_provider_available(model)]
-    if not supported_specialist_models or not supported_auditor_models:
+        fallback_model_pairs = _build_available_pairs()
+    if not fallback_model_pairs:
         logger.warning("Insufficient provider-backed models for specialist/auditor workflow; using deterministic specialist fallback")
+        _emit("llm:fallback", reason="insufficient_models")
+        _emit(
+            "crew:done",
+            status=deterministic_output["assessment"].get("status"),
+            risk_score=deterministic_output["assessment"].get("risk_score"),
+            used_fallback=True,
+        )
         return {
             "assessment": deterministic_output["assessment"],
             "tool_results": executed_tool_results,
@@ -825,15 +955,15 @@ def run_specialist_crew(
             "used_fallback": True,
         }
 
-    fallback_model_pairs: List[tuple[str, str]] = []
-    for idx in range(max(len(supported_specialist_models), len(supported_auditor_models))):
-        specialist_model = supported_specialist_models[idx] if idx < len(supported_specialist_models) else supported_specialist_models[-1]
-        auditor_model = supported_auditor_models[idx] if idx < len(supported_auditor_models) else supported_auditor_models[-1]
-        if (specialist_model, auditor_model) not in fallback_model_pairs:
-            fallback_model_pairs.append((specialist_model, auditor_model))
-
     if not fallback_model_pairs:
         logger.warning("No configured provider-backed models available; using deterministic specialist fallback")
+        _emit("llm:fallback", reason="no_model_pairs")
+        _emit(
+            "crew:done",
+            status=deterministic_output["assessment"].get("status"),
+            risk_score=deterministic_output["assessment"].get("risk_score"),
+            used_fallback=True,
+        )
         return {
             "assessment": deterministic_output["assessment"],
             "tool_results": executed_tool_results,
@@ -842,6 +972,10 @@ def run_specialist_crew(
             "used_fallback": True,
         }
     last_error: Exception | None = None
+    deadline = time.monotonic() + llm_time_budget_s
+
+    class _LLMBudgetExceededError(Exception):
+        pass
 
     def _try_crew_run(specialist_model: str, auditor_model: str, model_index: int) -> Dict[str, Any] | None:
         nonlocal last_error
@@ -923,7 +1057,14 @@ def run_specialist_crew(
             )
 
             crew = Crew(agents=[security_agent, network_agent, auditor_agent], tasks=[security_task, network_task, risk_task], verbose=False)
-            crew_output = crew.kickoff()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise _LLMBudgetExceededError(f"LLM phase budget ({llm_time_budget_s}s) exhausted")
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                try:
+                    crew_output = pool.submit(crew.kickoff).result(timeout=remaining)
+                except TimeoutError as exc:
+                    raise _LLMBudgetExceededError(f"LLM phase budget ({llm_time_budget_s}s) exhausted after {exc}") from exc
             parsed_output = _parse_structured_output(str(crew_output))
             failure_reason = None
 
@@ -975,27 +1116,60 @@ def run_specialist_crew(
                     "raw_output": str(crew_output),
                     "used_fallback": False,
                 }
+        except _LLMBudgetExceededError as exc:
+            last_error = exc
+            logger.warning("CrewAI LLM phase exceeded its budget with %s/%s; falling back to deterministic synthesis", specialist_model, auditor_model)
+            return None
         except Exception as exc:
             last_error = exc
             if _is_rate_limit_or_availability_error(exc) or _is_crew_tool_validation_error(exc):
                 if _is_rate_limit_or_availability_error(exc):
-                    _mark_model_cooldown(specialist_model)
-                    _mark_model_cooldown(auditor_model)
+                    _mark_failed_models(specialist_model, auditor_model, exc)
                 logger.warning("CrewAI model chain hit retryable/fallback-worthy error with %s/%s: %s", specialist_model, auditor_model, exc)
             else:
+                _mark_failed_models(specialist_model, auditor_model)
                 logger.warning("CrewAI specialist workflow failed unexpectedly for %s/%s; trying next model pair: %s", specialist_model, auditor_model, exc)
             # Every failure moves to the next model in the chain. A dead/missing
             # model should be the least catastrophic outcome, not a request crash.
             return None
 
-    for model_index, (specialist_model, auditor_model) in enumerate(fallback_model_pairs):
+    cooldown_lifted = False
+    model_index = 0
+    while time.monotonic() < deadline:
+        pairs = _build_available_pairs()
+        if not pairs:
+            if cooldown_lifted:
+                logger.warning("CrewAI specialist workflow exhausted all fallback models; using deterministic fallback")
+                break
+            # Every configured model rate-limited mid-chain; lift cooldowns once
+            # so a recovered provider can serve this request.
+            _PROVIDER_COOLDOWN.clear()
+            cooldown_lifted = True
+            continue
+        specialist_model, auditor_model = pairs[0]
+        _emit("llm:start", specialist=specialist_model, auditor=auditor_model, tier=model_index + 1)
         crew_run = _try_crew_run(specialist_model, auditor_model, model_index)
         if crew_run is not None:
+            _emit("llm:done", specialist=specialist_model, auditor=auditor_model, tier=model_index + 1)
+            _emit(
+                "crew:done",
+                status=crew_run["assessment"].get("status"),
+                risk_score=crew_run["assessment"].get("risk_score"),
+                used_fallback=bool(crew_run.get("used_fallback")),
+            )
             return crew_run
+        model_index += 1
 
     if last_error is not None:
         failure_reason = str(last_error)
     logger.warning("CrewAI specialist workflow exhausted all fallback models; using deterministic fallback: %s", failure_reason)
+    _emit("llm:fallback", reason=failure_reason)
+    _emit(
+        "crew:done",
+        status=deterministic_output["assessment"].get("status"),
+        risk_score=deterministic_output["assessment"].get("risk_score"),
+        used_fallback=True,
+    )
 
     return {
         "assessment": deterministic_output["assessment"],

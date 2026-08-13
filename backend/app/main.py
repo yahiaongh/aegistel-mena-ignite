@@ -4,8 +4,12 @@ import sys
 import warnings
 
 import asyncio
+import collections
 import io
+import json
 import logging
+import threading
+import time
 import traceback
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -97,7 +101,8 @@ def _is_rate_limit_or_availability_error(exc: Exception) -> bool:
     return any(marker in text for marker in ("429", "rate_limit", "quota", "no longer available", "temporarily unavailable", "service unavailable", "overloaded"))
 
 
-AUDIT_TIMEOUT_SECONDS = 35
+AUDIT_TIMEOUT_SECONDS = 120
+AUDIT_STREAM_TIMEOUT_SECONDS = 120
 
 @router.post("/v1/audit", response_model=AuditResponse)
 async def audit_transaction(request: AuditRequest) -> AuditResponse:
@@ -217,6 +222,61 @@ async def text_to_speech(
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"TTS Error: {exc}") from exc
+
+
+@router.post("/v1/audit/stream")
+async def audit_transaction_stream(request: AuditRequest):
+    """SSE variant of /v1/audit: emits pipeline progress events (tool calls,
+    synthesis, LLM layer), then a final `result` event with the full audit
+    response. Lets the dashboard animate the request/response flow in real time."""
+    events: "collections.deque[Dict[str, Any]]" = collections.deque()
+    events_lock = threading.Lock()
+
+    def _emit(evt: Dict[str, Any]) -> None:
+        with events_lock:
+            events.append(evt)
+
+    async def _runner() -> AuditResponse:
+        return await asyncio.wait_for(
+            execute_audit(request, progress_callback=_emit),
+            timeout=AUDIT_STREAM_TIMEOUT_SECONDS,
+        )
+
+    async def _generator():
+        task = asyncio.create_task(_runner())
+        last_ping = time.monotonic()
+        while True:
+            with events_lock:
+                batch = list(events)
+                events.clear()
+            for evt in batch:
+                yield f"event: progress\ndata: {json.dumps(evt, default=str)}\n\n"
+            if task.done():
+                try:
+                    result = await task
+                    yield f"event: result\ndata: {result.model_dump_json()}\n\n"
+                except asyncio.TimeoutError:
+                    yield f"event: error\ndata: {json.dumps({'error': f'audit exceeded {AUDIT_STREAM_TIMEOUT_SECONDS}s', 'type': 'TimeoutError'})}\n\n"
+                except HTTPException as exc:
+                    yield f"event: error\ndata: {json.dumps({'error': str(exc.detail), 'type': 'HTTPException'})}\n\n"
+                except Exception as exc:
+                    logger.error("Streaming audit failed: %s\n%s", exc, traceback.format_exc())
+                    yield f"event: error\ndata: {json.dumps({'error': str(exc), 'type': type(exc).__name__})}\n\n"
+                break
+            if time.monotonic() - last_ping > 15:
+                yield ": keep-alive\n\n"
+                last_ping = time.monotonic()
+            await asyncio.sleep(0.1)
+
+    return StreamingResponse(
+        _generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 app.include_router(router)
