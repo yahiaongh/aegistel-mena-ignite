@@ -48,7 +48,9 @@ class AgentTraceItem(BaseModel):
 
 
 class NokiaApiTelemetry(BaseModel):
-    # number_verification_match: bool = False
+    number_verification_match: Optional[bool] = None
+    number_verification_status: str = "UNKNOWN"
+    max_congestion_level: Optional[str] = None
     sim_swap_detected: bool = False
     last_sim_swap_date: Optional[str] = None
     location_verification_match: bool = True

@@ -530,3 +530,225 @@ def create_qod_session(
             "source": "Nokia CAMARA Sandbox (local fallback, not a live session)",
         }
     )
+
+
+@tool
+def verify_number(msisdn: str) -> str:
+    """Queries the Nokia NaC CAMARA Number Verification API to confirm that the
+    MSISDN presented for the transaction belongs to the subscriber's device.
+    Uses the Number Verification v0.2 flow (the same silent-check family as
+    SIM Swap), which authenticates the number without an SMS OTP."""
+    print(f"\n[NUMVER] --- EXECUTING verify_number TOOL ---")
+    print(f"[NUMVER] Target MSISDN: {msisdn}")
+    print(f"[NUMVER] SDK Available: {bool(nac_client)} | NV Module: {hasattr(nac_client, 'number_verification') if nac_client else False}")
+
+    # 1. Primary Method: Official Nokia NaC Python SDK
+    if nac_client and hasattr(nac_client, "number_verification"):
+        try:
+            # Verified against the installed network-as-code SDK
+            # (network_as_code/number_verification): the v0.2 VERIFY method is
+            #   client.number_verification.verify_v2(
+            #       request={"phone_number": msisdn}, correlator=...
+            #   )
+            # and the documented response model carries
+            #   device_phone_number_verified (alias devicePhoneNumberVerified)
+            # as a strict bool: True when the number matches the device.
+            # A correlator ties the verify request to a prior OAuth2 consent
+            # redirect (client.oauth); on the sandbox the direct phone_number
+            # request is accepted unless the API key lacks Number Verification
+            # entitlement, in which case we degrade to the fallbacks below.
+            verify_result = nac_client.number_verification.verify_v2(
+                request={"phone_number": msisdn}
+            )
+
+            verified = getattr(verify_result, "device_phone_number_verified", None)
+            res_payload = {
+                "devicePhoneNumberVerified": verified,
+                "verified": verified,
+                "verificationStatus": "VERIFIED" if verified is True else "FAILED",
+                "status_code": 200,
+                "source": "Nokia NaC SDK",
+            }
+            output_json = _safe_json(res_payload)
+            print(f"[NUMVER:SDK SUCCESS] Response Payload: {output_json}")
+            return output_json
+
+        except Exception as e:
+            print(f"[NUMVER:SDK ERROR] Nokia NaC SDK Number Verification failed: {e}")
+
+    # 2. Fallback Method: Direct Nokia CAMARA REST API Call
+    # CAMARA Number Verification v0.2: POST /number-verification/v0.2/verify
+    # with a request body containing either phoneNumber or hashedPhoneNumber.
+    # NOTE: as with the other passthrough paths in this file, Nokia's public
+    # docs document SDK usage for this API; this URL/shape follows the CAMARA
+    # spec and is unverified against a live RapidAPI subscription.
+    url = f"{NOKIA_BASE_URL}/number-verification/v0.2/verify"
+    try:
+        response = requests.post(
+            url, json={"phoneNumber": msisdn}, headers=_get_headers(), timeout=5
+        )
+        if response.status_code == 200:
+            data = response.json()
+            verified = data.get("devicePhoneNumberVerified")
+            res_payload = {
+                "devicePhoneNumberVerified": verified,
+                "verified": verified,
+                "verificationStatus": "VERIFIED" if verified is True else "FAILED",
+                "status_code": 200,
+                "source": "Nokia NaC REST API",
+            }
+            output_json = _safe_json(res_payload)
+            print(f"[NUMVER:REST SUCCESS] Response Payload: {output_json}")
+            return output_json
+    except Exception as e:
+        print(f"[NUMVER:REST ERROR] Nokia NaC REST API Number Verification request failed: {e}")
+
+    # 3. Fallback Method: Simulated Sandbox Data
+    # Documented demo numbers: the fraud-test subscriber (+99999991000) fails
+    # identity verification; the clean subscriber (+99999991001) passes. Any
+    # other number has no documented simulator behavior, so we report UNKNOWN —
+    # "we don't know" must not silently score the same as "confirmed good".
+    print(f"[NUMVER:SANDBOX FALLBACK] Executing local sandbox evaluation for {msisdn}")
+    if msisdn == "+99999991000":
+        verification_status = "FAILED"
+        verified = False
+    elif msisdn == "+99999991001":
+        verification_status = "VERIFIED"
+        verified = True
+    else:
+        verification_status = "UNKNOWN"
+        verified = None
+        print(
+            f"[NUMVER:SANDBOX FALLBACK] {msisdn} has no documented simulator behavior — "
+            f"reporting UNKNOWN, not VERIFIED. Use +99999991000 (fails) or +99999991001 (passes)."
+        )
+
+    return _safe_json(
+        {
+            "devicePhoneNumberVerified": verified,
+            "verified": verified,
+            "verificationStatus": verification_status,
+            "status_code": 200,
+            "source": "Nokia CAMARA Sandbox (local fallback)",
+        }
+    )
+
+
+@tool
+def get_congestion_insights(msisdn: str, lookback_hours: int = 1) -> str:
+    """Queries the Nokia NaC CAMARA Congestion Insights API for recent cell-level
+    congestion around the subscriber's serving area. Returns per-interval
+    congestion levels (Low/Medium/High) with confidence, plus the worst level
+    seen in the lookback window. Relevant to crowd-gathering detection in
+    dense urban zones and mega-events (smart-city context)."""
+    from datetime import datetime, timedelta, timezone
+
+    print(f"\n[CONGEST] --- EXECUTING get_congestion_insights TOOL ---")
+    print(f"[CONGEST] Target MSISDN: {msisdn} | lookback_hours: {lookback_hours}")
+
+    # 1. Primary Method: Official Nokia NaC Python SDK
+    if nac_client and hasattr(nac_client, "congestion_insights"):
+        try:
+            # Verified against the installed network-as-code SDK
+            # (network_as_code/congestion_insights): the QUERY method is
+            #   client.congestion_insights.query(
+            #       device={"phone_number": msisdn}, start=..., end=...
+            #   )
+            # and returns a list of items with documented fields
+            #   time_interval_start / time_interval_stop (datetime),
+            #   congestion_level ("Low" | "Medium" | "High"),
+            #   confidence_level (int, optional).
+            start = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
+            end = datetime.now(timezone.utc)
+            congestion_results = nac_client.congestion_insights.query(
+                device={"phone_number": msisdn}, start=start, end=end
+            )
+
+            intervals = []
+            for item in congestion_results or []:
+                intervals.append(
+                    {
+                        "timeIntervalStart": getattr(item, "time_interval_start", None).isoformat()
+                        if getattr(item, "time_interval_start", None)
+                        else None,
+                        "timeIntervalStop": getattr(item, "time_interval_stop", None).isoformat()
+                        if getattr(item, "time_interval_stop", None)
+                        else None,
+                        "congestionLevel": getattr(item, "congestion_level", None),
+                        "confidenceLevel": getattr(item, "confidence_level", None),
+                    }
+                )
+            levels = [it.get("congestionLevel") for it in intervals]
+            max_level = "High" if "High" in levels else ("Medium" if "Medium" in levels else ("Low" if levels else None))
+
+            res_payload = {
+                "congestionLevels": intervals,
+                "maxCongestionLevel": max_level,
+                "status_code": 200,
+                "source": "Nokia NaC SDK",
+            }
+            output_json = _safe_json(res_payload)
+            print(f"[CONGEST:SDK SUCCESS] Response Payload: {output_json}")
+            return output_json
+
+        except Exception as e:
+            print(f"[CONGEST:SDK ERROR] Nokia NaC SDK Congestion Insights query failed: {e}")
+
+    # 2. Fallback Method: Direct Nokia CAMARA REST API Call
+    # CAMARA Congestion Insights v0: POST /congestion-insights/v0/queries
+    # NOTE: unverified passthrough path, same caveat as the other tools.
+    url = f"{NOKIA_BASE_URL}/congestion-insights/v0/queries"
+    try:
+        response = requests.post(
+            url,
+            json={
+                "device": {"phoneNumber": msisdn},
+                "startTime": (datetime.now(timezone.utc) - timedelta(hours=lookback_hours)).isoformat(),
+                "endTime": datetime.now(timezone.utc).isoformat(),
+            },
+            headers=_get_headers(),
+            timeout=5,
+        )
+        if response.status_code == 200:
+            data = response.json()
+            intervals = data.get("congestionLevels") or []
+            levels = [it.get("congestionLevel") for it in intervals]
+            max_level = "High" if "High" in levels else ("Medium" if "Medium" in levels else ("Low" if levels else None))
+            res_payload = {
+                "congestionLevels": intervals,
+                "maxCongestionLevel": max_level,
+                "status_code": 200,
+                "source": "Nokia NaC REST API",
+            }
+            output_json = _safe_json(res_payload)
+            print(f"[CONGEST:REST SUCCESS] Response Payload: {output_json}")
+            return output_json
+    except Exception as e:
+        print(f"[CONGEST:REST ERROR] Nokia NaC REST API Congestion Insights request failed: {e}")
+
+    # 3. Fallback Method: Simulated Sandbox Data
+    # Documented demo numbers: the smart-city crowd number (+99999991002)
+    # simulates gathering in a dense zone (Medium), the fraud number
+    # (+99999991000) sits in a stressed cell (High), clean subscribers see Low.
+    print(f"[CONGEST:SANDBOX FALLBACK] Executing local sandbox evaluation for {msisdn}")
+    sandbox_level = {
+        "+99999991000": "High",
+        "+99999991001": "Low",
+        "+99999991002": "Medium",
+    }.get(msisdn, "Low")
+
+    return _safe_json(
+        {
+            "congestionLevels": [
+                {
+                    "timeIntervalStart": (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat(),
+                    "timeIntervalStop": datetime.now(timezone.utc).isoformat(),
+                    "congestionLevel": sandbox_level,
+                    "confidenceLevel": 95,
+                }
+            ],
+            "maxCongestionLevel": sandbox_level,
+            "status_code": 200,
+            "source": "Nokia CAMARA Sandbox (local fallback)",
+        }
+    )

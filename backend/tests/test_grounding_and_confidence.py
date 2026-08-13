@@ -204,6 +204,114 @@ def test_unreachable_device_alone_triggers_step_up():
     assert result["assessment"]["risk_score"] in {"MEDIUM", "HIGH", "CRITICAL"}
 
 
+def test_number_verification_failure_escalates_verdict():
+    # A FAILED Number Verification means the presented MSISDN could not be
+    # silently bound to the subscriber's device: a direct account-takeover
+    # signal equivalent to SIM swap.
+    result = synthesize_specialist_assessment(
+        {"msisdn": "+99999991000", "amount": 100, "request_qod": False},
+        [
+            {"name": "check_sim_swap", "swapped": False, "source": "sandbox"},
+            {"name": "verify_location", "verificationResult": "TRUE", "radius_meters": 2000, "source": "sandbox"},
+            {"name": "check_roaming_status", "roamingStatus": "DOMESTIC", "source": "sandbox"},
+            {"name": "verify_number", "devicePhoneNumberVerified": False, "verified": False, "verificationStatus": "FAILED", "source": "Nokia CAMARA Sandbox"},
+        ],
+        [],
+    )
+    assert result["assessment"]["status"] == "STEP_UP_REQUIRED"
+    assert result["assessment"]["risk_score"] == "HIGH"
+    nv_traces = [t for t in result["trace"] if t["agent"] == "Identity Verification Specialist"]
+    assert nv_traces and nv_traces[0]["status"] == "FLAGGED"
+    assert "Number Verification returned FAILED" in result["assessment"]["reasoning"]
+
+
+def test_number_verification_unknown_is_not_clean():
+    # An explicit UNKNOWN result must not silently score the same as VERIFIED.
+    result = synthesize_specialist_assessment(
+        {"msisdn": "+99999991002", "amount": 100, "request_qod": False},
+        [
+            {"name": "check_sim_swap", "swapped": False, "source": "sandbox"},
+            {"name": "verify_location", "verificationResult": "TRUE", "radius_meters": 2000, "source": "sandbox"},
+            {"name": "check_roaming_status", "roamingStatus": "DOMESTIC", "source": "sandbox"},
+            {"name": "verify_number", "verificationStatus": "UNKNOWN", "devicePhoneNumberVerified": None, "verified": None, "source": "Nokia CAMARA Sandbox"},
+        ],
+        [],
+    )
+    assert result["assessment"]["status"] == "STEP_UP_REQUIRED"
+    # A missing/unknown number binding must be treated as a risk signal, and a
+    # verified clean signal with an absent tool result stays approval-eligible.
+    assert result["assessment"]["risk_score"] == "HIGH"
+
+
+def test_absent_number_verification_result_stays_neutral():
+    # Requests without the Number Verification tool (or where the tool error
+    # row produced no usable payload) must not be escalated on absence alone.
+    result = synthesize_specialist_assessment(
+        {"msisdn": "+99999991001", "amount": 100, "request_qod": False},
+        [
+            {"name": "check_sim_swap", "swapped": False, "source": "sandbox"},
+            {"name": "verify_location", "verificationResult": "TRUE", "radius_meters": 2000, "source": "sandbox"},
+            {"name": "check_roaming_status", "roamingStatus": "DOMESTIC", "source": "sandbox"},
+        ],
+        [],
+    )
+    assert result["assessment"]["status"] == "APPROVED"
+
+
+def test_congestion_high_corroborates_existing_risk():
+    # Sustained High cell congestion is contextual corroboration: it escalates
+    # an already-active risk (amount-only MEDIUM -> HIGH) but does not flip a
+    # clean verdict by itself.
+    result = synthesize_specialist_assessment(
+        {"msisdn": "+99999991000", "amount": 500000, "request_qod": False},
+        [
+            {"name": "check_sim_swap", "swapped": False, "source": "sandbox"},
+            {"name": "verify_location", "verificationResult": "TRUE", "radius_meters": 2000, "source": "sandbox"},
+            {"name": "check_roaming_status", "roamingStatus": "DOMESTIC", "source": "sandbox"},
+            {"name": "get_congestion_insights", "maxCongestionLevel": "High", "source": "Nokia CAMARA Sandbox"},
+        ],
+        [],
+    )
+    assert result["assessment"]["status"] == "STEP_UP_REQUIRED"
+    assert result["assessment"]["risk_score"] == "HIGH"
+    congestion_traces = [t for t in result["trace"] if t["agent"] == "Congestion Intelligence Specialist"]
+    assert congestion_traces and congestion_traces[0]["status"] == "FLAGGED"
+    assert "High congestion" in result["assessment"]["reasoning"]
+
+
+def test_congestion_high_alone_is_not_standalone_signal():
+    # Real-API variance must never flip an otherwise-clean verdict: congestion
+    # is context, not fraud evidence.
+    result = synthesize_specialist_assessment(
+        {"msisdn": "+99999991001", "amount": 100, "request_qod": False},
+        [
+            {"name": "check_sim_swap", "swapped": False, "source": "sandbox"},
+            {"name": "verify_location", "verificationResult": "TRUE", "radius_meters": 2000, "source": "sandbox"},
+            {"name": "check_roaming_status", "roamingStatus": "DOMESTIC", "source": "sandbox"},
+            {"name": "get_congestion_insights", "maxCongestionLevel": "High", "source": "Nokia CAMARA Sandbox"},
+        ],
+        [],
+    )
+    assert result["assessment"]["status"] == "APPROVED"
+    assert result["assessment"]["risk_score"] == "LOW"
+
+
+def test_congestion_medium_is_not_standalone_signal():
+    # Medium congestion alone must not flip an otherwise-clean verdict.
+    result = synthesize_specialist_assessment(
+        {"msisdn": "+99999991002", "amount": 100, "request_qod": False},
+        [
+            {"name": "check_sim_swap", "swapped": False, "source": "sandbox"},
+            {"name": "verify_location", "verificationResult": "TRUE", "radius_meters": 2000, "source": "sandbox"},
+            {"name": "check_roaming_status", "roamingStatus": "DOMESTIC", "source": "sandbox"},
+            {"name": "get_congestion_insights", "maxCongestionLevel": "Medium", "source": "Nokia CAMARA Sandbox"},
+        ],
+        [],
+    )
+    assert result["assessment"]["status"] == "APPROVED"
+    assert result["assessment"]["risk_score"] == "LOW"
+
+
 def test_roaming_plus_swap_escalates_beyond_step_up():
     result = synthesize_specialist_assessment(
         {"msisdn": "+99999991000", "amount": 120000, "request_qod": False},
@@ -234,8 +342,9 @@ def test_clean_signal_low_amount_approves():
     assert result["assessment"]["risk_score"] == "LOW"
 
 
-def test_recurrence_memory_does_not_escalate_verdict():
-    # Ensure stored memory does not by itself flip an otherwise-LOW verdict
+def test_recurrence_memory_escalates_clean_case_to_step_up():
+    # Prior incident history is weighted into the verdict: a clean current
+    # signal with a high-severity past incident escalates to step-up.
     from app.agents.memory_agent import memory_engine
 
     msisdn = "+99999991001"
@@ -271,8 +380,58 @@ def test_recurrence_memory_does_not_escalate_verdict():
         mem,
     )
 
-    # Memory should not have escalated the deterministic verdict
-    assert second["assessment"]["status"] == "APPROVED"
+    # Memory is counted: an otherwise-clean case escalates to step-up given
+    # the subscriber's high-severity incident history.
+    assert second["assessment"]["status"] == "STEP_UP_REQUIRED"
+    assert second["assessment"]["risk_score"] == "HIGH"
+    memory_traces = [t for t in second["trace"] if t["agent"] == "Memory Agent"]
+    assert memory_traces and memory_traces[0]["status"] == "FLAGGED"
+
+
+def test_recurrence_memory_moderate_history_escalates_to_medium():
+    from app.agents.memory_agent import memory_engine
+
+    if memory_engine:
+        memory_engine.clear_all_memory()
+    msisdn = "+99999991001"
+    memory_engine.record_incident(msisdn, "moderate past incident", {"status": "APPROVED", "risk_score": "LOW"})
+
+    second = synthesize_specialist_assessment(
+        {"msisdn": msisdn, "amount": 100, "request_qod": False},
+        [
+            {"name": "check_sim_swap", "swapped": False, "source": "sandbox"},
+            {"name": "verify_location", "verificationResult": "TRUE", "radius_meters": 2000, "source": "sandbox"},
+            {"name": "check_roaming_status", "roamingStatus": "DOMESTIC", "source": "sandbox"},
+            {"name": "check_device_reachability", "reachabilityStatus": "DATA_ONLY", "source": "sandbox"},
+        ],
+        memory_engine.list_all_incidents(msisdn),
+    )
+    assert second["assessment"]["status"] == "STEP_UP_REQUIRED"
+    assert second["assessment"]["risk_score"] == "MEDIUM"
+
+
+def test_memory_bumps_active_risk_one_level():
+    # Memory corroboration escalates an already-active risk by one severity
+    # level: amount-only risk (MEDIUM) becomes HIGH with history present.
+    from app.agents.memory_agent import memory_engine
+
+    if memory_engine:
+        memory_engine.clear_all_memory()
+    msisdn = "+99999991001"
+    memory_engine.record_incident(msisdn, "past incident", {"status": "STEP_UP_REQUIRED", "risk_score": "MEDIUM"})
+
+    result = synthesize_specialist_assessment(
+        {"msisdn": msisdn, "amount": 500000, "request_qod": False},
+        [
+            {"name": "check_sim_swap", "swapped": False, "source": "sandbox"},
+            {"name": "verify_location", "verificationResult": "TRUE", "radius_meters": 2000, "source": "sandbox"},
+            {"name": "check_roaming_status", "roamingStatus": "DOMESTIC", "source": "sandbox"},
+            {"name": "check_device_reachability", "reachabilityStatus": "DATA_ONLY", "source": "sandbox"},
+        ],
+        memory_engine.list_all_incidents(msisdn),
+    )
+    assert result["assessment"]["status"] == "STEP_UP_REQUIRED"
+    assert result["assessment"]["risk_score"] == "HIGH"
 
 
 def test_llm_cannot_downgrade_deterministic_verdict():

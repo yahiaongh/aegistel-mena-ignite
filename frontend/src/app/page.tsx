@@ -52,7 +52,9 @@ interface AgentStep {
 }
 
 interface NokiaTelemetry {
-  // number_verification_match: boolean;
+  number_verification_match?: boolean | null;
+  number_verification_status?: string;
+  max_congestion_level?: string | null;
   sim_swap_detected: boolean;
   last_sim_swap_date?: string;
   location_verification_match: boolean;
@@ -104,6 +106,40 @@ interface HistoryResponse {
   incidents: HistoryIncident[];
 }
 
+interface DrillPlay {
+  id: string;
+  name: string;
+  archetype: string;
+  intent: string;
+  threat_level: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  verdict_status: string;
+  defense_risk: string;
+  outcome: "BLOCKED" | "ESCALATED" | "PARTIALLY_MISSED" | "MISSED" | "CLEARED" | "ERROR";
+  detected_via: string[];
+  used_fallback: boolean;
+}
+
+interface DrillBlindSpot {
+  play_id: string;
+  play_name: string;
+  threat_level: string;
+  outcome: string;
+  note: string;
+}
+
+interface DrillReport {
+  drill_id: string;
+  generated_by_llm: boolean;
+  playbook: string;
+  readiness_score: number;
+  grade: string;
+  total_plays: number;
+  outcomes: Record<string, number>;
+  plays: DrillPlay[];
+  blind_spots: DrillBlindSpot[];
+  recommendations: string[];
+}
+
 export default function AegisTelDashboard() {
   const [msisdn, setMsisdn] = useState("+99999991001");
   const [amount, setAmount] = useState("120000");
@@ -120,6 +156,9 @@ export default function AegisTelDashboard() {
   const [requestStatus, setRequestStatus] = useState<"idle" | "requesting" | "ready" | "error">("idle");
   const [liveEvents, setLiveEvents] = useState<LiveEvent[]>([]);
   const [activeSignalCount, setActiveSignalCount] = useState<number | null>(null);
+  const [drillResult, setDrillResult] = useState<DrillReport | null>(null);
+  const [drillLoading, setDrillLoading] = useState(false);
+  const [drillError, setDrillError] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryResponse | null>(null);
   const [historyOpen, setHistoryOpen] = useState(true);
   const [sessionStats, setSessionStats] = useState({ audits: 0, protectedAmount: 0 });
@@ -137,21 +176,29 @@ export default function AegisTelDashboard() {
   const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 
   useEffect(() => {
+    let cancelled = false;
     const fetchHealth = async () => {
       try {
         const res = await fetch(`${apiBase}/api/health`);
+        if (cancelled) return;
         if (res.ok) {
           const data = await res.json();
+          console.log("[Health] API health check response:", data);
           setActiveSignalCount(data.active_tool_count ?? null);
+        } else {
+          setActiveSignalCount(null);
         }
       } catch {
-        setActiveSignalCount(null);
+        if (!cancelled) setActiveSignalCount(null);
       }
     };
 
     void fetchHealth();
+    const healthInterval = window.setInterval(() => void fetchHealth(), 20000);
 
     return () => {
+      cancelled = true;
+      window.clearInterval(healthInterval);
       if (activeAudioRef.current) {
         activeAudioRef.current.pause();
         activeAudioRef.current.currentTime = 0;
@@ -360,6 +407,60 @@ export default function AegisTelDashboard() {
     setMsisdn(threatMsisdn);
     setAmount(threatAmount.toString());
     void runAudit(threatMsisdn, threatAmount.toString());
+  };
+
+  const runDrill = async () => {
+    setDrillLoading(true);
+    setDrillError(null);
+    setLiveEvents((prev) => [
+      ...prev,
+      {
+        id: `${Date.now()}-drill-start`,
+        type: "drill",
+        message: "Red team engaging: adversarial plays queued against the blue-team crew",
+        stage: "drill",
+      },
+    ]);
+    try {
+      const res = await fetch(`${apiBase}/api/v1/drill/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.detail ? `${body.error ?? "Request failed"}: ${body.detail}` : `HTTP ${res.status}`);
+      }
+      const data: DrillReport = await res.json();
+      setDrillResult(data);
+      setLiveEvents((prev) => [
+        ...prev,
+        {
+          id: `${Date.now()}-drill-done`,
+          type: "drill",
+          message: `Drill complete: readiness ${data.readiness_score}% (${data.grade}) — ${data.blind_spots.length} blind spot(s) found`,
+          stage: "completed",
+          detail: data.blind_spots.length > 0 ? data.blind_spots[0].note : "No blind spots in this playbook",
+        },
+      ]);
+      const drillBrief = `Adversarial drill complete. Defense readiness: ${data.readiness_score} percent, grade ${data.grade}. ${data.outcomes["BLOCKED"] ?? 0} plays blocked, ${data.outcomes["MISSED"] ?? 0} missed. ${data.blind_spots.length > 0 ? "The red team found a blind spot: " + data.blind_spots[0].play_name : "No blind spots found."}`;
+      void playVoiceAlert(drillBrief);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      setDrillError(message);
+      setLiveEvents((prev) => [
+        ...prev,
+        {
+          id: `${Date.now()}-drill-error`,
+          type: "error",
+          message: "Adversarial drill failed",
+          stage: "error",
+          detail: message,
+        },
+      ]);
+    } finally {
+      setDrillLoading(false);
+    }
   };
 
   return (
@@ -623,6 +724,8 @@ export default function AegisTelDashboard() {
                         { subject: 'Location', A: auditResult.telemetry.geofence_status !== 'VERIFIED' ? 1 : 0, note: auditResult.telemetry.geofence_status },
                         { subject: 'Roaming', A: auditResult.telemetry.roaming_status === 'INTERNATIONAL_ROAMING' ? 1 : 0, note: auditResult.telemetry.roaming_status },
                         { subject: 'Reachability', A: (auditResult.telemetry.reachability_status || '').toUpperCase() === 'UNREACHABLE' ? 1 : 0, note: auditResult.telemetry.reachability_status },
+                        { subject: 'Number Verify', A: (auditResult.telemetry.number_verification_status || '') !== 'VERIFIED' ? 1 : 0, note: auditResult.telemetry.number_verification_status || 'UNKNOWN' },
+                        { subject: 'Congestion', A: (auditResult.telemetry.max_congestion_level || 'low').toLowerCase() === 'high' ? 1 : 0, note: auditResult.telemetry.max_congestion_level || 'LOW' },
                         { subject: 'QoD', A: auditResult.telemetry.qod_status ? 1 : 0, note: `${auditResult.telemetry.qod_status || 'NONE'}${auditResult.telemetry.qod_profile ? ' • ' + auditResult.telemetry.qod_profile : ''}` },
                       ]}
                     >
@@ -655,9 +758,161 @@ export default function AegisTelDashboard() {
                         <span className="text-slate-500">NONE</span>
                       )}</div>
                     </div>
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/70 p-2">
+                      <div className="text-[10px] text-slate-500 uppercase">Number Verification</div>
+                      <div className="font-semibold text-slate-100">
+                        <span className={(auditResult.telemetry.number_verification_status || 'UNKNOWN') === 'VERIFIED' ? "text-emerald-400" : "text-rose-400"}>
+                          {auditResult.telemetry.number_verification_status || 'UNKNOWN'}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/70 p-2">
+                      <div className="text-[10px] text-slate-500 uppercase">Cell Congestion</div>
+                      <div className="font-semibold text-slate-100">
+                        <span className={(auditResult.telemetry.max_congestion_level || 'low').toLowerCase() === 'high' ? "text-amber-400" : "text-emerald-400"}>
+                          {auditResult.telemetry.max_congestion_level || 'LOW'}
+                        </span>
+                      </div>
+                    </div>
                   </div>
                 </div>
               ) : null}
+            </div>
+
+            <div className="bg-slate-900/80 border border-rose-950 rounded-lg p-3">
+              <div className="flex items-center justify-between">
+                <div className="text-[10px] text-rose-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <Zap className="w-3 h-3" /> Red Team — Adversarial Drill
+                </div>
+                <button
+                  onClick={() => void runDrill()}
+                  disabled={drillLoading}
+                  className={`px-2.5 py-1 rounded text-[10px] font-bold uppercase border transition-colors ${
+                    drillLoading
+                      ? "border-rose-900 text-rose-500 cursor-not-allowed"
+                      : "border-rose-700 bg-rose-950 text-rose-300 hover:bg-rose-900"
+                  }`}
+                >
+                  {drillLoading ? "RED TEAM ENGAGED..." : "RUN ADVERSARIAL DRILL"}
+                </button>
+              </div>
+              <p className="mt-2 text-[11px] text-slate-400 leading-relaxed">
+                The same multi-agent engine that guards transactions now plays the attacker:
+                a red-team playbook of fraud plays executes against the live crew, and the
+                defense is graded on how many it actually caught.
+              </p>
+
+              {drillError ? (
+                <div className="mt-3 rounded border border-rose-800 bg-rose-950/40 p-2.5 text-[10px] text-rose-300">
+                  Drill request failed: {drillError}. Confirm the backend is running (uvicorn app.main:app --reload)
+                  and NODE_ENV has NEXT_PUBLIC_API_BASE_URL pointing at it — this route is /api/v1/drill/run.
+                </div>
+              ) : null}
+
+              {drillResult ? (
+                <div className="mt-3 space-y-3">
+                  <div>
+                    <div className="flex items-baseline justify-between text-[11px] mb-1">
+                      <span className="text-slate-400 uppercase">Defense Readiness</span>
+                      <span className="font-bold text-rose-300">{drillResult.readiness_score}% <span className="text-slate-500">({drillResult.grade})</span></span>
+                    </div>
+                    <div className="h-2 rounded bg-slate-950 border border-slate-800 overflow-hidden">
+                      <div
+                        className={`h-full rounded transition-all duration-700 ${drillResult.readiness_score >= 80 ? "bg-emerald-500" : drillResult.readiness_score >= 60 ? "bg-amber-500" : "bg-rose-500"}`}
+                        style={{ width: `${drillResult.readiness_score}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-1.5 text-[10px]">
+                    {(Object.entries(drillResult.outcomes) as [string, number][]).map(([name, count]) => (
+                      <span key={name} className={`px-2 py-0.5 rounded border font-bold ${
+                        name === "BLOCKED" ? "border-rose-800 bg-rose-950 text-rose-300"
+                        : name === "ESCALATED" ? "border-amber-800 bg-amber-950 text-amber-300"
+                        : name === "CLEARED" ? "border-emerald-800 bg-emerald-950 text-emerald-300"
+                        : name === "PARTIALLY_MISSED" ? "border-orange-800 bg-orange-950 text-orange-300"
+                        : name === "MISSED" ? "border-red-800 bg-red-950 text-red-400"
+                        : "border-slate-700 bg-slate-950 text-slate-400"
+                      }`}>
+                        {name} {count}
+                      </span>
+                    ))}
+                  </div>
+
+                  <div className="space-y-2">
+                    {drillResult.plays.map((play) => (
+                      <div key={play.id} className="border border-slate-800 bg-slate-950/70 rounded p-2.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[11px] font-bold text-slate-200">{play.name}</span>
+                          <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${
+                            play.threat_level === "CRITICAL" ? "border-rose-700 bg-rose-950 text-rose-300"
+                            : play.threat_level === "HIGH" ? "border-orange-700 bg-orange-950 text-orange-300"
+                            : play.threat_level === "MEDIUM" ? "border-amber-700 bg-amber-950 text-amber-300"
+                            : "border-emerald-700 bg-emerald-950 text-emerald-300"
+                          }`}>
+                            THREAT {play.threat_level}
+                          </span>
+                        </div>
+                        <div className="mt-1 text-[10px] text-slate-500 italic">{play.intent}</div>
+                        <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[10px]">
+                          <span className="text-slate-400">Defense:</span>
+                          <span className="font-bold text-cyan-300">{play.verdict_status} / {play.defense_risk}</span>
+                          <span className={`ml-auto px-1.5 py-0.5 rounded font-bold border ${
+                            play.outcome === "BLOCKED" ? "border-rose-800 bg-rose-950 text-rose-300"
+                            : play.outcome === "ESCALATED" ? "border-amber-800 bg-amber-950 text-amber-300"
+                            : play.outcome === "CLEARED" ? "border-emerald-800 bg-emerald-950 text-emerald-300"
+                            : play.outcome === "PARTIALLY_MISSED" || play.outcome === "MISSED" ? "border-orange-800 bg-orange-950 text-orange-300"
+                            : "border-slate-700 bg-slate-950 text-slate-400"
+                          }`}>
+                            {play.outcome.replace("_", " ")}
+                          </span>
+                        </div>
+                        {play.detected_via.length > 0 ? (
+                          <div className="mt-1.5 flex flex-wrap gap-1">
+                            {play.detected_via.map((signal) => (
+                              <span key={signal} className="text-[9px] px-1.5 py-0.5 rounded bg-slate-950 border border-slate-800 text-slate-400">
+                                {signal}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+
+                  {drillResult.blind_spots.length > 0 ? (
+                    <div className="border border-amber-900 bg-amber-950/20 rounded p-2.5">
+                      <div className="text-[10px] font-bold uppercase text-amber-300 mb-1">
+                        Blind Spot Discovered ({drillResult.blind_spots.length})
+                      </div>
+                      {drillResult.blind_spots.map((spot) => (
+                        <div key={spot.play_id} className="text-[10px] text-slate-300">
+                          <span className="font-bold text-amber-200">{spot.play_name}</span> — {spot.note}
+                        </div>
+                      ))}
+                      {drillResult.recommendations.map((rec) => (
+                        <div key={rec} className="text-[10px] text-slate-400 italic mt-1">→ {rec}</div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-[10px] text-emerald-400 text-center py-1">No blind spots in this playbook.</div>
+                  )}
+
+                  <div className="text-[9px] text-slate-600 border-t border-slate-900 pt-1.5 flex justify-between">
+                    <span>{drillResult.playbook}</span>
+                    <span>{drillResult.drill_id}</span>
+                  </div>
+                </div>
+              ) : drillLoading ? (
+                <div className="py-4 flex items-center justify-center space-x-2 text-[11px] text-rose-300">
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  <span>Fraud Genie is writing attack plays... executing against the crew...</span>
+                </div>
+              ) : (
+                <div className="mt-3 text-[11px] text-slate-500 italic border border-dashed border-slate-800 rounded p-3">
+                  No drill run yet this session. Run one to grade the defense against the playbook.
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -737,9 +992,33 @@ export default function AegisTelDashboard() {
                     <div className="text-xs font-bold text-slate-200">{auditResult.telemetry.reachability_status}</div>
                   </div>
 
+                  <div className="bg-slate-950 border border-slate-800 p-3 rounded-lg space-y-1">
+                    <span className="text-[10px] text-slate-500 uppercase flex items-center gap-1">
+                      <ShieldCheck className="w-3 h-3 text-emerald-400" /> Number Verification
+                    </span>
+                    <div className="text-xs font-bold">
+                      {auditResult.telemetry.number_verification_status === "VERIFIED"
+                        ? <span className="text-emerald-400">NUMBER VERIFIED</span>
+                        : auditResult.telemetry.number_verification_status === "FAILED"
+                          ? <span className="text-rose-400">VERIFICATION FAILED</span>
+                          : <span className="text-slate-400">{auditResult.telemetry.number_verification_status ?? "UNKNOWN"}</span>}
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-950 border border-slate-800 p-3 rounded-lg space-y-1">
+                    <span className="text-[10px] text-slate-500 uppercase flex items-center gap-1">
+                      <Activity className="w-3 h-3 text-orange-400" /> Cell Congestion
+                    </span>
+                    <div className="text-xs font-bold">
+                      <span className={(auditResult.telemetry.max_congestion_level ?? "").toUpperCase() === "HIGH" ? "text-rose-400" : (auditResult.telemetry.max_congestion_level ?? "").toUpperCase() === "MEDIUM" ? "text-amber-400" : "text-emerald-400"}>
+                        {(auditResult.telemetry.max_congestion_level ?? "LOW").toUpperCase()} LOAD
+                      </span>
+                    </div>
+                  </div>
+
                   <div className="bg-slate-950 border border-slate-800 p-3 rounded-lg space-y-1 w-full">
                     <span className="text-[10px] text-slate-500 uppercase flex items-center gap-1">
-                      <Radio className="w-3 h-3 text-indigo-400" /> QoD Network Slice
+                      <Radio className="w-3 h-3 text-indigo-400" /> QoD Slice Provisioning
                     </span>
                     <div className="text-xs font-bold">
                         {auditResult.telemetry.qod_session_active ? (
