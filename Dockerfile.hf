@@ -1,0 +1,35 @@
+FROM node:20-alpine AS frontend-build
+WORKDIR /app/frontend
+COPY frontend/package*.json ./
+RUN npm ci
+COPY frontend .
+RUN npm run build
+
+FROM python:3.12-bookworm AS backend-build
+WORKDIR /app/backend
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential curl sqlite3 && rm -rf /var/lib/apt/lists/*
+COPY backend/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+COPY backend ./
+
+FROM python:3.12-bookworm AS runtime
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PORT=7860 \
+    HOSTNAME=0.0.0.0
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates gnupg sqlite3 && \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    rm -rf /var/lib/apt/lists/*
+COPY backend/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+COPY backend /app/backend
+COPY --from=frontend-build /app/frontend/.next/standalone /app/frontend
+COPY --from=frontend-build /app/frontend/.next/static /app/frontend/.next/static
+COPY --from=frontend-build /app/frontend/public /app/frontend/public
+COPY frontend/next.config.ts /app/frontend/next.config.ts
+COPY start.sh /app/start.sh
+RUN chmod +x /app/start.sh
+EXPOSE 7860
+CMD ["/app/start.sh"]

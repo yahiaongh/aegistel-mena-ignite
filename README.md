@@ -6,6 +6,7 @@ colorTo: indigo
 sdk: docker
 pinned: false
 app_port: 7860
+dockerfile: Dockerfile.hf
 ---
 
 # AegisTel — Autonomous Telco-Aware AI Guard Engine
@@ -15,13 +16,13 @@ app_port: 7860
 
 ## Executive summary
 
-AegisTel is an autonomous fraud and risk orchestration platform that turns telecom telemetry into real-time security decisions. It combines a FastAPI backend, a LangGraph-based agent workflow, deterministic specialist reasoning, and a polished Next.js demo dashboard to make telecom-aware fraud assessment understandable, explainable, and presentation-ready.
+AegisTel is a telecom-aware fraud assessment demo that turns transaction context into an explainable security decision. The current backend combines a FastAPI API, a specialist workflow for SIM swap, location, roaming, reachability, and QoD checks, and a polished Next.js operator dashboard.
 
-The platform is designed for hackathon-grade demos and submission readiness. It focuses on three principles that matter for the event:
+The implementation is designed for hackathon-grade demos and submission readiness. It focuses on three principles that matter for the event:
 
 - Explainability: every decision has reasoning and an evidence trail.
-- Autonomy: the system selects and executes telecom checks end to end.
-- Resilience: a deterministic fallback path keeps the demo stable even when LLM providers are rate-limited.
+- Autonomy: the system executes telecom checks end to end for the supplied MSISDN and transaction context.
+- Resilience: a deterministic fallback path keeps the demo stable even when live LLM or CrewAI execution is unavailable.
 
 ---
 
@@ -30,14 +31,12 @@ The platform is designed for hackathon-grade demos and submission readiness. It 
 The current version integrates the full live demo flow across backend and frontend:
 
 - A production-style LangGraph orchestrator now drives the evaluation workflow.
-- Specialist agents are part of the live reasoning path for:
-  - Security Specialist
-  - Network Intelligence Specialist
-  - Risk Auditor
-- Deterministic specialist synthesis ensures the backend remains explainable and stable even when Groq is unavailable.
-- The FastAPI backend exposes a browser-friendly audit route and a live evidence trail.
+- CrewAI is the primary reasoning path for the specialist agents, with deterministic synthesis remaining as the safety net when model calls fail or quotas are exhausted.
+- The specialist crew now uses a layered model chain that tries Groq first, then Gemini, then OpenRouter as additional fallbacks so one provider outage does not collapse the whole workflow.
+- The auditor uses its own fallback chain so the final verdict can still be produced if one provider becomes unavailable.
+- The FastAPI backend exposes a browser-friendly audit route and a live evidence trail, including structured error details for failed requests.
 - The Next.js frontend renders the verdict, telemetry, and agent trace in a polished Nokia NaC-style operator experience.
-- Memory-based incident recall and a structured audit response are now part of the end-to-end experience.
+- Memory-based incident recall now uses Gemini-backed memory extraction so it does not compete with the specialist reasoning budget.
 
 ---
 
@@ -75,9 +74,9 @@ graph TD
 ### Core components
 
 - Backend: Python, FastAPI, LangGraph, Pydantic
-- Agent reasoning: deterministic specialist synthesis + optional Groq-based planning
+- Agent reasoning: CrewAI as the primary reasoning path, with deterministic synthesis as the fallback when model calls fail or quotas are exhausted
 - Frontend: Next.js, TypeScript, Tailwind-inspired UI, live evidence presentation
-- Memory: incident recall for fraud pattern correlation
+- Memory: incident recall for fraud pattern correlation. Writes use a small LLM extraction step (Gemini) to index memory records, but reads currently use a local exact-match lookup fallback for stability; full semantic recall/search was deliberately deferred to avoid runtime hangs on demo hardware.
 
 ---
 
@@ -111,21 +110,31 @@ aegistel-mena-ignite/
 │   │   │   ├── graph_orchestrator.py
 │   │   │   ├── memory_agent.py
 │   │   │   └── tools.py
-│   │   ├── api/
-│   │   │   └── websocket_router.py
 │   │   ├── core/
 │   │   │   └── config.py
 │   │   ├── schemas/
 │   │   │   └── telemetry.py
 │   │   └── main.py
 │   └── tests/
-│       └── test_orchestrator.py
+│       ├── conftest.py
+│       ├── test_audit_route_error_detail.py
+│       ├── test_crew_fallback_chain.py
+│       ├── test_orchestrator.py
+│       ├── test_startup_script.py
+│       └── test_tts_fallback.py
 ├── frontend/
-│   └── src/app
+│   ├── src/
+│   │   └── app/
+│   │       ├── components/
+│   │       │   └── ThreatStream.tsx
+│   │       ├── globals.css
+│   │       ├── layout.tsx
+│   │       └── page.tsx
+│   ├── package.json
+│   └── README.md
+├── Dockerfile.hf
 ├── docker-compose.yml
-├── generate_audio.py
-├── generate_doc.py
-├── generate_ppt.py
+├── start.sh
 └── README.md
 ```
 
@@ -167,7 +176,6 @@ docker-compose up --build -d
 
 - Frontend dashboard: http://localhost:3000
 - FastAPI docs: http://localhost:8000/docs
-- WebSocket route: ws://localhost:8000/ws/orchestrate
 
 ---
 
@@ -175,8 +183,52 @@ docker-compose up --build -d
 
 The current implementation has been validated with fresh checks:
 
-- Backend regression tests: 4 passed
-- Frontend production build: completed successfully
+- Backend regression tests: 34 passed via `cd backend && source ../venv/bin/activate && python -m pytest tests -q`
+- Frontend lint: clean via `cd frontend && npm run lint`
+- Frontend production build: succeeded via `cd frontend && npm run build`
+- Deployment image build: completed successfully via `docker build -f Dockerfile.hf -t aegistel-hf-local .`
+
+---
+
+## Evaluation
+
+The behavioral eval gate (`backend/scripts/round21_eval.py`) runs 10 fixed scenarios against the deterministic rule engine and the LLM-augmented workflow:
+
+```bash
+cd backend && source ../venv/bin/activate
+PYTHONPATH=. python scripts/round21_eval.py --skip-llm    # deterministic only, no quota
+PYTHONPATH=. python scripts/round21_eval.py --verbose     # full LLM-augmented run
+PYTHONPATH=. python scripts/round21_eval.py --verbose --csv results.csv
+```
+
+Latest run on the stable scenario set:
+
+- **Deterministic-only: 10/10** matched the expected verdict.
+- **LLM-augmented strictness: 10/10** (never more lenient than the deterministic contract).
+- **LLM-augmented exact agreement: 5/10** — the remaining 5 rows were the LLM choosing a *stricter* outcome on confirmed-risk cases (e.g. `REJECTED`/`MANUAL_REVIEW` instead of `STEP_UP_REQUIRED`), which is the intended augmentation.
+- Benign cases (`+99999991001`, sub-threshold amounts) always agree exactly with deterministic `APPROVED`.
+
+Coherence rules enforced by the reconcile layer:
+
+- The LLM may **intensify confirmed risk** (e.g. `STEP_UP_REQUIRED` → `REJECTED`/`BLOCKED`).
+- The LLM **cannot downgrade** grounded risk to a more lenient verdict.
+- The LLM **cannot invent risk** on a clean case: if the deterministic engine returns `APPROVED` with no risk signal, the verdict stays `APPROVED` regardless of model output, so the same transaction yields the same verdict whether the LLM fallback path is active or not.
+- Memory context and QoD session creation are corroborating signals only; they do not by themselves flip a clean verdict.
+
+The eval runs one scenario at a time with memory cleared for isolation, so free-tier quota is the only limiting factor on the full LLM run.
+
+---
+
+## Multi-LLM fallback and quota strategy
+
+AegisTel uses a deliberate multi-model fallback chain so the demo remains resilient when one provider rate limits or becomes unavailable:
+
+- Specialist reasoning first tries Groq's primary 70B model.
+- If that tier hits a quota or availability issue, the workflow falls back to the next available provider in the chain, including Gemini and OpenRouter.
+- The risk auditor uses the same principle on its own path, with Gemini and other providers filling in when needed.
+- Memory operations use Gemini-backed memory extraction so they do not compete with the specialist reasoning budget; reads use a local exact-match fallback for stability on demo hardware.
+
+This separation is intentional: specialist fraud reasoning and memory extraction are treated as distinct workloads with distinct resilience strategies. The deterministic rule engine is treated as the authoritative contract; LLM augmentations may be stricter but are not allowed to silently be more lenient than grounded deterministic values.
 
 ---
 

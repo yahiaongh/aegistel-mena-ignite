@@ -1,4 +1,5 @@
 venv/
+.venv/
 __pycache__/
 *.pyc
 .DS_Store
@@ -7,7 +8,10 @@ node_modules/
 dist/
 *.log
 submission/
-*.env
+.env
 architecture
 backend/.env
 generate*
+.pytest_cache/
+data/
+project_scripts.txt

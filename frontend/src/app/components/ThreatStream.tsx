@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { ShieldAlert, Zap, Radio, Volume2 } from "lucide-react";
+import { Zap, Radio } from "lucide-react";
 
 interface ThreatEvent {
   id: string;
@@ -25,7 +25,7 @@ export default function ThreatStream({ onSelectThreat }: { onSelectThreat: (msis
     <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-4 space-y-3 font-mono">
       <div className="flex justify-between items-center border-b border-slate-800 pb-2">
         <span className="text-xs font-bold text-rose-400 flex items-center gap-2">
-          <Radio className="w-4 h-4 text-rose-500 animate-ping" /> LIVE MENA CARRIER THREAT FEED
+          <Radio className="w-4 h-4 text-rose-500" /> REPRESENTATIVE THREAT SCENARIOS
         </span>
       </div>
 
