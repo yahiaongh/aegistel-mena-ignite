@@ -36,7 +36,9 @@ The current version integrates the full live demo flow across backend and fronte
 - The auditor uses its own fallback chain so the final verdict can still be produced if one provider becomes unavailable.
 - The FastAPI backend exposes a browser-friendly audit route and a live evidence trail, including structured error details for failed requests.
 - The Next.js frontend renders the verdict, telemetry, and agent trace in a polished Nokia NaC-style operator experience.
+- The crew now executes **seven CAMARA tools** — SIM Swap, Location Verification, Device Roaming Status, Device Reachability, Quality on Demand, **Number Verification**, and **Congestion Insights** — each with a live Nokia NaC SDK call first, a CAMARA REST passthrough second, and a documented sandbox fallback third.
 - Memory-based incident recall now uses Gemini-backed memory extraction so it does not compete with the specialist reasoning budget.
+- Number Verification and Congestion Insights are weighted into the deterministic verdict: a FAILED/UNKNOWN number binding is an account-takeover signal on the same footing as SIM swap, while sustained High cell congestion corroborates crowd-gathering contexts.
 
 ---
 
@@ -45,9 +47,11 @@ The current version integrates the full live demo flow across backend and fronte
 Traditional fraud systems rely on static application context. AegisTel brings telecom intelligence into the decision loop by using CAMARA-style signals such as:
 
 - SIM swap detection
+- Number Verification (silent ownership check)
 - Location verification
 - Roaming status
 - Device reachability
+- Congestion Insights (smart-city / crowd context)
 - QoD session handling
 
 This allows the platform to make fast, evidence-backed decisions for high-value or high-risk flows such as fintech transfers, emergency dispatch, and smart city safety events.
@@ -87,15 +91,20 @@ graph TD
 3. Tool outputs are normalized into specialist assessments.
 4. The system returns a structured result: status, risk score, reasoning, recommendation, and evidence trail.
 5. The UI displays the verdict and the live trace for the operator.
+6. **Adversarial Drill** — the operator can flip roles: the same multi-agent engine plays the attacker, executing a red-team playbook (SIM-swap OTP interception, cross-border mule relays, congestion-synchronized strikes, staged micro-attacks, clean control runs) against the live crew. The drill grades defense readiness (0-100 and A-F), surfaces the signal each play was caught on, and reports the blind spots the red team actually discovered — including first-strike micro-attacks under the flat amount threshold that read clean on all seven signals.
 
 ### Example demo scenario
 
 A sample number such as +99999991000 triggers the expected high-risk signals in the sandbox path, including:
 
 - recent SIM swap evidence
+- failed Number Verification (device binding could not be confirmed)
+- High cell congestion in the serving area
 - failed location verification
 - roaming context
 - QoD step-up recommendation
+
+Every signal above is also exercised by the drill playbook: play-01 (OTP Intercept via SIM Swap) and play-02 (Cross-Border Mule Relay) hit the exact +99999991000 profile, so the red-team panel shows the same drama as the live audit.
 
 ---
 
@@ -107,6 +116,7 @@ aegistel-mena-ignite/
 │   ├── app/
 │   │   ├── agents/
 │   │   │   ├── crew_specialists.py
+│   │   │   ├── drill_agent.py
 │   │   │   ├── graph_orchestrator.py
 │   │   │   ├── memory_agent.py
 │   │   │   └── tools.py
@@ -117,8 +127,11 @@ aegistel-mena-ignite/
 │   │   └── main.py
 │   └── tests/
 │       ├── conftest.py
+│       ├── test_adversarial_drill.py
 │       ├── test_audit_route_error_detail.py
 │       ├── test_crew_fallback_chain.py
+│       ├── test_grounding_and_confidence.py
+│       ├── test_number_verification_and_congestion.py
 │       ├── test_orchestrator.py
 │       ├── test_startup_script.py
 │       └── test_tts_fallback.py
@@ -183,10 +196,38 @@ docker-compose up --build -d
 
 The current implementation has been validated with fresh checks:
 
-- Backend regression tests: 34 passed via `cd backend && source ../venv/bin/activate && python -m pytest tests -q`
-- Frontend lint: clean via `cd frontend && npm run lint`
-- Frontend production build: succeeded via `cd frontend && npm run build`
-- Deployment image build: completed successfully via `docker build -f Dockerfile.hf -t aegistel-hf-local .`
+- Backend regression tests: 58 passed (`cd backend && .venv/bin/python -m pytest tests/ -q`)
+- Backend drill tests: 9 passed (`cd backend && .venv/bin/python -m pytest tests/test_adversarial_drill.py -q`)
+- Frontend typecheck and lint: clean (`cd frontend && npx tsc --noEmit && npm run lint`)
+- API smoke: `GET /api/health` returns `"active_tool_count": 7`; `POST /api/v1/drill/run` returns a full drill report.
+
+### How to test the Adversarial Drill
+
+**1. Prerequisites** — backend on `:8000` (`uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload` from `backend/`), frontend on `:3000` (`npm run dev` from `frontend/`; Next rewrites `/api/*` to the backend).
+
+**2. API-level (fastest proof):**
+
+```bash
+curl http://localhost:3000/api/health                      # expect active_tool_count: 7
+curl -X POST http://localhost:3000/api/v1/drill/run \
+  -H "Content-Type: application/json" -d '{"use_llm": false}'   # deterministic, ~5s
+```
+
+Remove `"use_llm": false` for the full LLM crew run (plays execute concurrently; ~20-40s). Expect `readiness_score`, `grade`, `outcomes`, one entry per play in `plays[]` (verdict + risk + outcome + `detected_via` signals), and `blind_spots[]` containing the Micro-Staging First Strike play.
+
+**3. UI-level (the demo):**
+
+1. Open `http://localhost:3000` — the chip next to "APIs Integrated" must read **7 CAMARA Signals** (it re-polls every 20s; refresh the page if it was loaded before the backend started).
+2. Bottom of the left column: **Red Team — Adversarial Drill** card. Click **RUN ADVERSARIAL DRILL**.
+3. The button switches to "RED TEAM ENGAGED...", the Live Audit Trace shows `DRILL` events, and a voice briefing plays on completion.
+4. Expected results: readiness bar + grade, outcome chips (BLOCKED / ESCALATED / PARTIALLY_MISSED / CLEARED / PARTIALLY_MISSED), six play cards with threat level, defense verdict and the signals that caught each play, and an amber **Blind Spot Discovered** box (Micro-Staging First Strike) with a recommendation.
+5. If a run fails, the red team card now shows the real error inline (banner) and the trace records `error` events — don't ship a "nothing happened" state.
+
+**4. Expected numbers** (`tests/test_adversarial_drill.py` pins the deterministic behavior):
+
+- Deterministic run: readiness **73.3 / B** — 4 ESCALATED, 1 PARTIALLY_MISSED, 1 CLEARED.
+- LLM run (observed): readiness **81.7 / A** — 2 BLOCKED (crew REJECTED them), 2 ESCALATED, 1 PARTIALLY_MISSED, 1 CLEARED, `used_fallback: false`.
+- The blind spot is identical in both paths — the drill must find a real weakness, and the control play (Clean-Line Control Run) must never manufacture risk.
 
 ---
 
@@ -213,7 +254,7 @@ Coherence rules enforced by the reconcile layer:
 - The LLM may **intensify confirmed risk** (e.g. `STEP_UP_REQUIRED` → `REJECTED`/`BLOCKED`).
 - The LLM **cannot downgrade** grounded risk to a more lenient verdict.
 - The LLM **cannot invent risk** on a clean case: if the deterministic engine returns `APPROVED` with no risk signal, the verdict stays `APPROVED` regardless of model output, so the same transaction yields the same verdict whether the LLM fallback path is active or not.
-- Memory context and QoD session creation are corroborating signals only; they do not by themselves flip a clean verdict.
+- Memory context is weighted into the verdict: a clean case with prior incident history escalates to step-up, and an already-active risk is bumped one severity level. QoD session creation is a consequence of risk, not a signal itself.
 
 The eval runs one scenario at a time with memory cleared for isolation, so free-tier quota is the only limiting factor on the full LLM run.
 

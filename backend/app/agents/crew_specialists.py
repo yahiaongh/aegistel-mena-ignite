@@ -14,7 +14,9 @@ from app.agents.tools import (
     check_roaming_status,
     check_sim_swap,
     create_qod_session,
+    get_congestion_insights,
     verify_location,
+    verify_number,
 )
 from app.core.config import settings
 from app.core.constants import ISO_COUNTRY_NAMES
@@ -113,8 +115,31 @@ def synthesize_specialist_assessment(
     roaming_result = _find_tool_result(tool_results, "roamingStatus")
     reachability_result = _find_tool_result(tool_results, "reachabilityStatus", "reachable")
     qod_result = _find_tool_result(tool_results, "qosStatus", "qosProfile")
+    number_verification_result = _find_tool_result(tool_results, "devicePhoneNumberVerified", "verificationStatus")
+    congestion_result = _find_tool_result(tool_results, "maxCongestionLevel", "congestionLevels")
 
     sim_swapped = bool(sim_result and sim_result.get("swapped"))
+    number_verified = None
+    if number_verification_result is not None:
+        verified_value = number_verification_result.get("verified")
+        if verified_value is None:
+            verified_value = number_verification_result.get("devicePhoneNumberVerified")
+        if verified_value is not None:
+            number_verified = bool(verified_value)
+        elif str(number_verification_result.get("verificationStatus", "")).upper() == "VERIFIED":
+            number_verified = True
+        elif str(number_verification_result.get("verificationStatus", "")).upper() == "FAILED":
+            number_verified = False
+    number_verification_status = (
+        "VERIFIED" if number_verified is True else ("FAILED" if number_verified is False else "UNKNOWN")
+    )
+    number_verification_risk = number_verified is False or (
+        number_verification_status == "UNKNOWN" and number_verification_result is not None
+    )
+
+    max_congestion_level = str(congestion_result.get("maxCongestionLevel", "")).lower() if congestion_result else ""
+    congestion_high_risk = max_congestion_level == "high"
+    congestion_medium = max_congestion_level == "medium"
     verification_result = str(location_result.get("verificationResult", "TRUE")).upper() if location_result else "TRUE"
     if verification_result not in {"TRUE", "FALSE", "PARTIAL", "UNKNOWN"}:
         # A failed/absent verification (e.g. a CAMARA error row yielding an
@@ -199,31 +224,72 @@ def synthesize_specialist_assessment(
         }
     )
 
-    # Memory is exploratory context only; it should not by itself flip the
-    # deterministic risk signal. Record the presence of prior incidents as a
-    # trace-only item so operators can see corroborating history without
-    # automatically escalating verdicts.
+    # Memory context is weighted into the verdict: prior incident history for
+    # the subscriber corroborates the current transaction. A clean current
+    # signal with history still warrants step-up verification, and an already
+    # active risk signal is escalated one severity level when history exists.
+    high_severity_history = any(
+        str((entry.get("metadata") or {}).get("risk_score", "")).upper() in {"HIGH", "CRITICAL"}
+        or str((entry.get("metadata") or {}).get("status", "")).upper()
+        in {"REJECTED", "BLOCKED", "MANUAL_REVIEW"}
+        for entry in (memory_context or [])
+    )
+
+    # Number Verification is a silent ownership check: a FAILED or UNKNOWN
+    # result means the presented number could not be bound to the device, which
+    # is a direct account-takeover signal on the same footing as SIM swap.
+    trace_items.append(
+        {
+            "agent": "Identity Verification Specialist",
+            "action": "NUMBER_VERIFICATION_EVALUATION",
+            "thought": (
+                f"Number Verification returned {number_verification_status} for {msisdn}."
+            ),
+            "status": "FLAGGED" if number_verification_risk else "CLEARED",
+            "detail": f"verificationStatus={number_verification_status} | source={number_verification_result.get('source', 'unknown') if number_verification_result else 'absent'}",
+        }
+    )
+
+    # Congestion Insights is a contextual signal: sustained High congestion in
+    # the subscriber's serving cell corroborates crowd-gathering scenarios
+    # (smart cities / mega-events) but is not evidence of fraud on its own.
+    trace_items.append(
+        {
+            "agent": "Congestion Intelligence Specialist",
+            "action": "CONGESTION_INSIGHTS_EVALUATION",
+            "thought": (
+                f"Cell congestion around {msisdn} is {max_congestion_level.upper() or 'UNKNOWN'} over the lookback window."
+            ),
+            "status": "FLAGGED" if congestion_high_risk else "CLEARED",
+            "detail": f"maxCongestionLevel={max_congestion_level or 'absent'} | source={congestion_result.get('source', 'unknown') if congestion_result else 'absent'}",
+        }
+    )
+
     risk_signal = (
         sim_swapped
         or verification_result in {"FALSE", "PARTIAL", "UNKNOWN"}
         or roaming_status == "INTERNATIONAL_ROAMING"
         or unreachable_risk
         or tx_high_risk
+        or number_verification_risk
     )
     if memory_hits:
         trace_items.append(
             {
                 "agent": "Memory Agent",
                 "action": "RECURRENCE_EVIDENCE",
-                "thought": f"Found {len(memory_context)} prior incident(s) for {msisdn}; recorded as corroborating context only.",
-                "status": "FOUND",
-                "detail": f"memory_count={len(memory_context)}",
+                "thought": (
+                    f"Found {len(memory_context)} prior incident(s) for {msisdn}; "
+                    "history corroborates the current assessment and is weighted into the verdict."
+                ),
+                "status": "FLAGGED",
+                "detail": f"memory_count={len(memory_context)} | high_severity_history={high_severity_history}",
             }
         )
     if roaming_policy_violation:
         risk_signal = True
 
-    if amount_risk and not risk_signal:
+    if amount_risk and not risk_signal and not memory_hits and not congestion_high_risk:
         status = "STEP_UP_REQUIRED"
         risk_score = "MEDIUM"
         reasoning = (
@@ -231,12 +297,30 @@ def synthesize_specialist_assessment(
             "exceeds the standard auto-approval threshold, warranting step-up verification regardless."
         )
         recommended_action = "Request additional verification before final approval given transaction size."
-    elif risk_signal or amount_risk:
+    elif risk_signal or amount_risk or memory_hits:
         status = "STEP_UP_REQUIRED"
-        risk_score = "CRITICAL" if risk_signal and amount_risk else ("HIGH" if risk_signal else "MEDIUM")
+        if risk_signal and amount_risk:
+            risk_score = "CRITICAL"
+        elif risk_signal:
+            risk_score = "HIGH"
+        else:
+            risk_score = "HIGH" if high_severity_history else "MEDIUM"
+        if memory_hits and (risk_signal or amount_risk) and risk_score != "CRITICAL":
+            risk_score = "CRITICAL" if risk_score == "HIGH" else "HIGH"
+        if congestion_high_risk and (risk_signal or amount_risk or memory_hits) and risk_score != "CRITICAL":
+            # Congestion is contextual corroboration, not fraud evidence: it
+            # never flips a clean verdict, but it escalates an already-active
+            # risk by one severity level (crowd-gathering scenarios in dense
+            # urban zones warrant extra scrutiny on top of other signals).
+            risk_score = "CRITICAL" if risk_score == "HIGH" else "HIGH"
         parts = []
         if sim_swapped:
             parts.append("SIM swap evidence was present.")
+        if number_verification_risk:
+            parts.append(
+                f"Number Verification returned {number_verification_status} for the presented MSISDN, "
+                "so the number could not be silently bound to the subscriber's device."
+            )
         if not verification_match:
             parts.append("The location verification did not match the expected network context.")
         if roaming_status == "INTERNATIONAL_ROAMING":
@@ -245,8 +329,19 @@ def synthesize_specialist_assessment(
             parts.append("The device was unreachable, preventing secondary verification.")
         if roaming_policy_violation:
             parts.append("The transaction violated the enforced roaming policy by using international roaming.")
+        if congestion_high_risk:
+            parts.append(
+                "The subscriber's serving cell reported sustained High congestion, "
+                "consistent with crowd-gathering scenarios that warrant scrutiny."
+            )
+        elif congestion_medium:
+            parts.append("The subscriber's serving cell reported Medium congestion as contextual corroboration.")
         if memory_hits:
-            parts.append("Historical fraud memory added corroborating context.")
+            parts.append(
+                "Prior incident memory for the subscriber corroborates elevated risk "
+                f"({('high' if high_severity_history else 'moderate')}-severity history); "
+                "recurrence evidence is weighted into this verdict."
+            )
         if amount_risk:
             parts.append(f"The transaction amount of ${amount:,.2f} exceeded the standard auto-approval threshold.")
         if qod_active:
@@ -261,7 +356,13 @@ def synthesize_specialist_assessment(
                 "Specialist synthesis identified no direct compromise indicators, "
                 "but the transaction context warrants further review."
             )
-        recommended_action = "Escalate the payment with a QoD-assisted step-up and human review."
+        if not risk_signal and not amount_risk:
+            recommended_action = (
+                "Escalate with step-up verification and optionally a QoD-assisted session; "
+                "the subscriber's prior incident history drives this escalation."
+            )
+        else:
+            recommended_action = "Escalate the payment with a QoD-assisted step-up and human review."
     else:
         status = "APPROVED"
         risk_score = "LOW"
@@ -290,6 +391,9 @@ def synthesize_specialist_assessment(
             "roaming_status": roaming_status,
             "roaming_country": roaming_country,
             "reachability_status": reachability_result.get("reachabilityStatus", "UNKNOWN") if reachability_result else "UNKNOWN",
+            "number_verification_match": number_verified,
+            "number_verification_status": number_verification_status,
+            "max_congestion_level": max_congestion_level or None,
             "qod_session_active": qod_active,
             "qod_profile": qod_profile,
                 "qod_status": qod_status,
@@ -535,11 +639,11 @@ def _build_task_description(
     transaction_type: str | None = None,
 ) -> str:
     if role == "security":
-        evidence = [item for item in executed_tool_results if item.get("name") in {"check_sim_swap", "check_roaming_status"}]
+        evidence = [item for item in executed_tool_results if item.get("name") in {"check_sim_swap", "check_roaming_status", "verify_number"}]
     elif role == "network":
-        evidence = [item for item in executed_tool_results if item.get("name") in {"verify_location", "check_device_reachability", "create_qod_session"}]
+        evidence = [item for item in executed_tool_results if item.get("name") in {"verify_location", "check_device_reachability", "create_qod_session", "get_congestion_insights"}]
     else:
-        evidence = [item for item in executed_tool_results if item.get("name") in {"check_sim_swap", "check_roaming_status", "verify_location", "check_device_reachability", "create_qod_session"}]
+        evidence = [item for item in executed_tool_results if item.get("name") in {"check_sim_swap", "check_roaming_status", "verify_location", "check_device_reachability", "create_qod_session", "verify_number", "get_congestion_insights"}]
 
     memory_summary = ", ".join(
         f"{item.get('text', 'memory')}" for item in memory_context[:3]
@@ -645,6 +749,8 @@ def run_specialist_crew(
         ),
         ("check_roaming_status", lambda: _run_tool_payload("check_roaming_status", check_roaming_status, msisdn=msisdn)),
         ("check_device_reachability", lambda: _run_tool_payload("check_device_reachability", check_device_reachability, msisdn=msisdn)),
+        ("verify_number", lambda: _run_tool_payload("verify_number", verify_number, msisdn=msisdn)),
+        ("get_congestion_insights", lambda: _run_tool_payload("get_congestion_insights", get_congestion_insights, msisdn=msisdn)),
     ]
 
     logger.info("verify_location called with radius=%s for msisdn=%s", geofence_radius_meters, msisdn)
@@ -675,6 +781,8 @@ def run_specialist_crew(
     fallback_trace = deterministic_output.get("trace", [])
     failure_reason = "CrewAI not executed"
 
+    force_deterministic = bool(request_context.get("force_deterministic"))
+
     provider_available = any(
         [
             settings.GROQ_API_KEY,
@@ -682,8 +790,8 @@ def run_specialist_crew(
             settings.OPENROUTER_API_KEY,
         ]
     )
-    if not provider_available:
-        logger.warning("No provider credentials available; using deterministic specialist fallback for crew workflow")
+    if force_deterministic or not provider_available:
+        logger.warning("Using deterministic specialist fallback for crew workflow")
         return {
             "assessment": deterministic_output["assessment"],
             "tool_results": executed_tool_results,

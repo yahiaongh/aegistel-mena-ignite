@@ -8,7 +8,7 @@ import io
 import logging
 import traceback
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from dotenv import load_dotenv
 from fastapi import APIRouter, FastAPI, Form, HTTPException
@@ -62,7 +62,9 @@ def _count_active_tools() -> int:
             "check_roaming_status",
             "check_sim_swap",
             "create_qod_session",
+            "get_congestion_insights",
             "verify_location",
+            "verify_number",
         ]
         return sum(1 for name in tool_names if hasattr(tools_mod, name))
     except Exception:
@@ -218,3 +220,27 @@ async def text_to_speech(
 
 
 app.include_router(router)
+
+DRILL_TIMEOUT_SECONDS = 180
+
+
+@router.post("/v1/drill/run")
+async def adversarial_drill_run(request: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Red-team drill: executes adversarial plays against the blue-team crew and grades the defense."""
+    try:
+        from app.agents.drill_agent import run_adversarial_drill
+
+        body = request or {}
+        return await asyncio.wait_for(
+            asyncio.to_thread(
+                run_adversarial_drill,
+                plays=body.get("plays"),
+                use_llm=body.get("use_llm", True),
+            ),
+            timeout=DRILL_TIMEOUT_SECONDS,
+        )
+    except HTTPException as exc:
+        return _audit_error_response(exc, exc.status_code)
+    except Exception as exc:
+        logger.error("Adversarial drill failed: %s\n%s", exc, traceback.format_exc())
+        return _audit_error_response(exc, 502)

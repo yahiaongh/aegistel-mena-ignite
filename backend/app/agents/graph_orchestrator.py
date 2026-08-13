@@ -31,6 +31,9 @@ class FinalAssessment(BaseModel):
     roaming_status: str = Field("DOMESTIC")
     roaming_country: str | None = Field(None)
     reachability_status: str = Field("UNKNOWN")
+    number_verification_match: bool | None = Field(None)
+    number_verification_status: str = Field("UNKNOWN")
+    max_congestion_level: str | None = Field(None)
     qod_session_active: bool = Field(False)
     qod_profile: str | None = Field(None)
     qod_status: str | None = Field(None)
@@ -193,6 +196,9 @@ async def execute_audit(request: AuditRequest) -> AuditResponse:
         roaming_status=assessment.roaming_status,
         roaming_country=assessment.roaming_country,
         reachability_status=assessment.reachability_status,
+        number_verification_match=assessment.number_verification_match,
+        number_verification_status=assessment.number_verification_status,
+        max_congestion_level=assessment.max_congestion_level,
         qod_session_active=assessment.qod_session_active,
         qod_profile=assessment.qod_profile,
         qod_status=assessment.qod_status,
