@@ -121,6 +121,31 @@ def test_geofence_status_preserves_unknown_state():
     assert result["assessment"]["geofence_status"] == "UNKNOWN"
 
 
+def test_empty_verification_result_is_unknown_risk():
+    # A CAMARA error row (e.g. 404) yields an empty verificationResult. That is
+    # missing data, not a clean match: it must be treated as UNKNOWN risk so a
+    # device whose location could not be checked is never silently approved.
+    result = synthesize_specialist_assessment(
+        {"msisdn": "+99999991001", "amount": 100, "request_qod": False},
+        [{"name": "verify_location", "verificationResult": "", "radius_meters": 5000, "status_code": 404, "source": "sandbox"}],
+        [],
+    )
+    assert result["assessment"]["geofence_status"] == "UNKNOWN"
+    assert result["assessment"]["location_verification_match"] is False
+    assert result["assessment"]["status"] == "STEP_UP_REQUIRED"
+    assert result["assessment"]["risk_score"] == "HIGH"
+
+
+def test_none_verification_result_is_unknown_risk():
+    result = synthesize_specialist_assessment(
+        {"msisdn": "+99999991001", "amount": 100, "request_qod": False},
+        [{"name": "verify_location", "verificationResult": None, "radius_meters": 5000, "status_code": 502, "source": "sandbox"}],
+        [],
+    )
+    assert result["assessment"]["geofence_status"] == "UNKNOWN"
+    assert result["assessment"]["status"] == "STEP_UP_REQUIRED"
+
+
 def test_local_memory_persists_to_disk_across_reload():
     if LOCAL_STORE_PATH.exists():
         LOCAL_STORE_PATH.unlink()

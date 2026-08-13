@@ -116,6 +116,11 @@ def synthesize_specialist_assessment(
 
     sim_swapped = bool(sim_result and sim_result.get("swapped"))
     verification_result = str(location_result.get("verificationResult", "TRUE")).upper() if location_result else "TRUE"
+    if verification_result not in {"TRUE", "FALSE", "PARTIAL", "UNKNOWN"}:
+        # A failed/absent verification (e.g. a CAMARA error row yielding an
+        # empty result) means the location could not be confirmed. Treat it as
+        # UNKNOWN so the transaction is never silently approved on missing data.
+        verification_result = "UNKNOWN"
     verification_match = verification_result == "TRUE"
     geofence_status = {
         "TRUE": "VERIFIED",
@@ -244,8 +249,8 @@ def synthesize_specialist_assessment(
             parts.append("Historical fraud memory added corroborating context.")
         if amount_risk:
             parts.append(f"The transaction amount of ${amount:,.2f} exceeded the standard auto-approval threshold.")
-        if amount >= 25000 or request_qod:
-            parts.append("A QoD-assisted step-up was recommended for the transaction.")
+        if qod_active:
+            parts.append("A QoD-assisted step-up session was provisioned for the transaction.")
         if tx_high_risk:
             parts.append(f"The transaction type '{transaction_type}' is classified as high risk by policy.")
         # Defensive: ensure reasoning is meaningful even if parts is empty
@@ -621,7 +626,10 @@ def run_specialist_crew(
     from concurrent.futures import ThreadPoolExecutor
 
     # The telemetry tools are independent SDK calls. Running them concurrently
-    # removes the serial latency without changing which tools run.
+    # removes the serial latency without changing which tools run. QoD is
+    # provisioned separately below, after the deterministic risk signal has
+    # been computed, so that high-risk flows auto-provision a session even when
+    # the amount is low and the caller did not explicitly request one.
     jobs: List[tuple[str, Any]] = [
         ("check_sim_swap", lambda: _run_tool_payload("check_sim_swap", check_sim_swap, msisdn=msisdn)),
         (
@@ -638,13 +646,25 @@ def run_specialist_crew(
         ("check_roaming_status", lambda: _run_tool_payload("check_roaming_status", check_roaming_status, msisdn=msisdn)),
         ("check_device_reachability", lambda: _run_tool_payload("check_device_reachability", check_device_reachability, msisdn=msisdn)),
     ]
-    if amount >= 25000 or request_qod:
-        jobs.append(("create_qod_session", lambda: _run_tool_payload("create_qod_session", create_qod_session, msisdn=msisdn)))
 
     logger.info("verify_location called with radius=%s for msisdn=%s", geofence_radius_meters, msisdn)
     with ThreadPoolExecutor(max_workers=len(jobs)) as _pool:
         _futures = [(_name, _pool.submit(_fn)) for _name, _fn in jobs]
         executed_tool_results = [(_fut[1].result()) for _fut in _futures]
+
+    # Pre-compute the deterministic risk signal from the base telemetry so the
+    # QoD decision can react to actual risk (auto-provision on risk), not just
+    # to the amount threshold or an explicit caller flag.
+    risk_scan = synthesize_specialist_assessment(
+        request_context,
+        executed_tool_results,
+        memory_context,
+        enforce_roaming_policy=enforce_roaming_policy,
+    )
+    risk_signal = risk_scan["assessment"].get("status") != "APPROVED"
+
+    if amount >= 25000 or request_qod or risk_signal:
+        executed_tool_results.append(_run_tool_payload("create_qod_session", create_qod_session, msisdn=msisdn))
 
     deterministic_output = synthesize_specialist_assessment(
         request_context,

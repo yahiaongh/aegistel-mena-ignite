@@ -192,13 +192,16 @@ def verify_location(
         "+99999991001": (200, "TRUE"),
         "+99999991002": (200, "PARTIAL"),
         "+99999991003": (200, "UNKNOWN"),
-        "+99999990400": (400, ""),
-        "+99999990404": (404, ""),
-        "+99999990422": (422, ""),
-        "+99999990500": (500, ""),
-        "+99999990502": (502, ""),
-        "+99999990503": (503, ""),
-        "+99999990504": (504, ""),
+        # Error rows cannot return a verification result; report UNKNOWN so the
+        # synthesis layer treats the unchecked location as a risk signal rather
+        # than mistaking an absence of data for a clean match.
+        "+99999990400": (400, "UNKNOWN"),
+        "+99999990404": (404, "UNKNOWN"),
+        "+99999990422": (422, "UNKNOWN"),
+        "+99999990500": (500, "UNKNOWN"),
+        "+99999990502": (502, "UNKNOWN"),
+        "+99999990503": (503, "UNKNOWN"),
+        "+99999990504": (504, "UNKNOWN"),
     }
     sandbox_entry = map.get(msisdn)
     if sandbox_entry is None:
