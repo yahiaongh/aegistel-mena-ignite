@@ -129,7 +129,9 @@ def test_model_chain_runs_without_groq_when_other_providers_are_configured(monke
 
     assert result["used_fallback"] is False
     assert result["assessment"]["status"] == "APPROVED"
-    assert any(model.startswith("gemini/") for _, model in calls if _ == "agent")
+    # The reordered chain prefers the fast reliable provider (OpenRouter)
+    # first, so with Groq keys absent the specialist runs on it before Gemini.
+    assert any(model.startswith("openrouter/") for _, model in calls if _ == "agent")
 
 
 def test_model_chain_retries_each_supported_model_once(monkeypatch):
@@ -194,11 +196,13 @@ def test_model_chain_retries_each_supported_model_once(monkeypatch):
     assert result["used_fallback"] is False
     assert result["assessment"]["status"] == "APPROVED"
     attempted = [model for _, model in calls if _ == "agent"]
+    # With Groq keys absent, the reordered chain prefers the fast reliable
+    # provider (OpenRouter) before falling back to the rate-limit-prone Gemini.
     assert attempted == [
-        "gemini/gemini-flash-latest",
-        "gemini/gemini-flash-latest",
-        "gemini/gemini-flash-latest",
         "openrouter/openai/gpt-4o-mini",
         "openrouter/openai/gpt-4o-mini",
         "openrouter/openai/gpt-4o-mini",
+        "gemini/gemini-flash-latest",
+        "gemini/gemini-flash-latest",
+        "gemini/gemini-flash-latest",
     ]
