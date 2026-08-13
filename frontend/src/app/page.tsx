@@ -40,6 +40,15 @@ import {
   Radar,
 } from "recharts";
 import ThreatStream from "./components/ThreatStream";
+import AuditFlowDiagram, { type FlowState, type FlowTool } from "./components/AuditFlowDiagram";
+
+interface ToolResult {
+  name: string;
+  success: boolean;
+  source: string;
+  duration_ms?: number | null;
+  payload: Record<string, unknown>;
+}
 
 interface AgentStep {
   agent: string;
@@ -69,6 +78,7 @@ interface NokiaTelemetry {
   evidence_strength?: string;
   confidence?: number;
   cross_border_risk?: boolean;
+  tool_results?: ToolResult[];
 }
 
 interface AuditResponse {
@@ -82,6 +92,7 @@ interface AuditResponse {
   recommended_action: string;
   agent_trace: AgentStep[];
   used_fallback?: boolean;
+  raw_output?: string | null;
 }
 
 interface LiveEvent {
@@ -140,6 +151,16 @@ interface DrillReport {
   recommendations: string[];
 }
 
+const INITIAL_FLOW_TOOLS: FlowTool[] = [
+  { name: "check_sim_swap", state: "pending" },
+  { name: "verify_location", state: "pending" },
+  { name: "check_roaming_status", state: "pending" },
+  { name: "check_device_reachability", state: "pending" },
+  { name: "verify_number", state: "pending" },
+  { name: "get_congestion_insights", state: "pending" },
+  { name: "create_qod_session", state: "pending" },
+];
+
 export default function AegisTelDashboard() {
   const [msisdn, setMsisdn] = useState("+99999991001");
   const [amount, setAmount] = useState("120000");
@@ -170,6 +191,12 @@ export default function AegisTelDashboard() {
     BLOCKED: 0,
   });
   const [verdictVisible, setVerdictVisible] = useState(false);
+  const [flowPhase, setFlowPhase] = useState<"idle" | "running" | "done" | "error">("idle");
+  const [flowTools, setFlowTools] = useState<FlowTool[]>(INITIAL_FLOW_TOOLS);
+  const [flowSpecialist, setFlowSpecialist] = useState<FlowState>("pending");
+  const [flowAuditor, setFlowAuditor] = useState<FlowState>("pending");
+  const [flowLlmModel, setFlowLlmModel] = useState<string | null>(null);
+  const [flowVerdict, setFlowVerdict] = useState<{ status?: string; risk?: string } | null>(null);
 
   const activeAudioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -319,11 +346,119 @@ export default function AegisTelDashboard() {
     }
   };
 
-  const runAudit = async (targetPhone = msisdn, targetAmount = amount) => {
+  const applyAuditResult = (data: AuditResponse) => {
+    setAuditResult(data);
+    setRequestStatus("ready");
+    setFlowPhase("done");
+    setFlowVerdict({ status: data.status, risk: data.risk_score });
+    setSessionStats((prev) => ({
+      audits: prev.audits + 1,
+      protectedAmount: prev.protectedAmount + (data.status !== "APPROVED" ? data.amount : 0),
+    }));
+    setSessionStatusCounts((prev) => ({
+      ...prev,
+      [data.status]: (prev[data.status] || 0) + 1,
+    }));
+    setLiveEvents((prev) => [
+      ...prev,
+      {
+        id: `${Date.now()}-response`,
+        type: "response",
+        message: `Received full audit response for ${data.msisdn}`,
+        stage: "completed",
+        detail: data.reasoning,
+      },
+    ]);
+
+    const briefText = `Audit complete for ${data.msisdn}. Verdict: ${data.status}. Risk level: ${data.risk_score}. ${data.reasoning}`;
+    void playVoiceAlert(briefText);
+  };
+
+  const handleFlowProgress = (payload: Record<string, unknown>) => {
+    const setToolState = (name: string, state: FlowState, extra?: Partial<FlowTool>) => {
+      setFlowTools((prev) => prev.map((t) => (t.name === name ? { ...t, state, ...extra } : t)));
+    };
+    switch (payload.type) {
+      case "tools:start":
+        setFlowTools((prev) => prev.map((t) => ({ ...t, state: "running" as FlowState })));
+        setLiveEvents((prev) => [
+          ...prev,
+          { id: `${Date.now()}-tools`, type: "tools", message: `Firing ${payload.count ?? 7} CAMARA tools in parallel`, stage: "telemetry" },
+        ]);
+        break;
+      case "tool:done":
+        setToolState(
+          String(payload.tool ?? ""),
+          payload.status === "ok" ? "ok" : "flag",
+          { source: String(payload.source ?? ""), durationMs: Number(payload.duration_ms ?? 0) }
+        );
+        setLiveEvents((prev) => [
+          ...prev,
+          { id: `${Date.now()}-tool`, type: "tool", message: `${payload.tool} returned [${payload.source}] in ${payload.duration_ms}ms`, stage: "telemetry" },
+        ]);
+        break;
+      case "memory:done":
+        setLiveEvents((prev) => [
+          ...prev,
+          { id: `${Date.now()}-mem`, type: "memory", message: `Memory engine retrieved ${payload.incidents} prior incident(s)`, stage: "memory" },
+        ]);
+        break;
+      case "synthesis:done":
+        setLiveEvents((prev) => [
+          ...prev,
+          { id: `${Date.now()}-synth`, type: "synthesis", message: `Deterministic synthesis: ${payload.status} / ${payload.risk_score} (${payload.signal_count} signals)`, stage: "grounding" },
+        ]);
+        break;
+      case "qod:start":
+        setToolState("create_qod_session", "running");
+        break;
+      case "qod:done":
+        setToolState("create_qod_session", "ok");
+        break;
+      case "llm:start":
+        setFlowLlmModel(String(payload.specialist ?? "").split("/").pop() ?? null);
+        setFlowSpecialist("running");
+        setFlowAuditor("running");
+        break;
+      case "llm:done":
+        setFlowSpecialist("ok");
+        setFlowAuditor("ok");
+        setFlowLlmModel(String(payload.specialist ?? "").split("/").pop() ?? null);
+        setLiveEvents((prev) => [
+          ...prev,
+          { id: `${Date.now()}-llm`, type: "llm", message: `CrewAI completed on ${payload.specialist} (tier ${payload.tier})`, stage: "llm" },
+        ]);
+        break;
+      case "llm:fallback":
+        setFlowSpecialist("flag");
+        setFlowAuditor("flag");
+        setFlowLlmModel("deterministic");
+        setLiveEvents((prev) => [
+          ...prev,
+          { id: `${Date.now()}-llmf`, type: "llm", message: `LLM layer skipped: ${payload.reason}`, stage: "fallback" },
+        ]);
+        break;
+      case "crew:done":
+        setFlowVerdict({ status: String(payload.status ?? ""), risk: String(payload.risk_score ?? "") });
+        setLiveEvents((prev) => [
+          ...prev,
+          { id: `${Date.now()}-crew`, type: "crew", message: `Crew verdict: ${payload.status} / ${payload.risk_score}${payload.used_fallback ? " (deterministic fallback)" : ""}`, stage: "verdict" },
+        ]);
+        break;
+    }
+  };
+
+  const runAudit = async (targetPhone = msisdn, targetAmount = amount, deterministicRetry = false) => {
     setLoading(true);
     setAuditResult(null);
-    setLiveEvents([]);
     setRequestStatus("requesting");
+    setFlowPhase("running");
+    setFlowTools(INITIAL_FLOW_TOOLS);
+    setFlowSpecialist("pending");
+    setFlowAuditor("pending");
+    setFlowLlmModel(null);
+    setFlowVerdict(null);
+    if (!deterministicRetry) setLiveEvents([]);
 
     const payload = {
       msisdn: targetPhone,
@@ -337,57 +472,85 @@ export default function AegisTelDashboard() {
       metadata: {
         geofence_radius_meters: parseFloat(geofenceRadius),
         enforce_roaming_policy: checkRoaming,
+        ...(deterministicRetry ? { _force_deterministic: true } : {}),
       },
     };
 
-    setLiveEvents([
-      {
-        id: `${Date.now()}-request`,
-        type: "request",
-        message: "Sending audit request to AegisTel backend",
-        stage: "request",
-      },
-    ]);
+    if (deterministicRetry) {
+      setLiveEvents((prev) => [
+        ...prev,
+        {
+          id: `${Date.now()}-retry`,
+          type: "request",
+          message: "Stream dropped — rerunning on the deterministic engine (LLM providers rate-limited)",
+          stage: "request",
+        },
+      ]);
+    } else {
+      setLiveEvents([
+        {
+          id: `${Date.now()}-request`,
+          type: "request",
+          message: "Opening live audit stream to AegisTel backend",
+          stage: "request",
+        },
+      ]);
+    }
 
     try {
-      const res = await fetch(`${apiBase}/api/v1/audit`, {
+      const res = await fetch(`${apiBase}/api/v1/audit/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
 
-      if (!res.ok) {
+      if (!res.ok || !res.body) {
         const body = await res.json().catch(() => null);
         throw new Error(body?.detail ? `${body.error ?? "Request failed"}: ${body.detail}` : `HTTP ${res.status}`);
       }
 
-      const data: AuditResponse = await res.json();
-      setAuditResult(data);
-      setRequestStatus("ready");
-      setSessionStats((prev) => ({
-        audits: prev.audits + 1,
-        protectedAmount: prev.protectedAmount + (data.status !== "APPROVED" ? data.amount : 0),
-      }));
-      setSessionStatusCounts((prev) => ({
-        ...prev,
-        [data.status]: (prev[data.status] || 0) + 1,
-      }));
-      setLiveEvents((prev) => [
-        ...prev,
-        {
-          id: `${Date.now()}-response`,
-          type: "response",
-          message: `Received full audit response for ${data.msisdn}`,
-          stage: "completed",
-          detail: data.reasoning,
-        },
-      ]);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let streamError: string | null = null;
 
-      const briefText = `Audit complete for ${data.msisdn}. Verdict: ${data.status}. Risk level: ${data.risk_score}. ${data.reasoning}`;
-      void playVoiceAlert(briefText);
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const frames = buffer.split("\n\n");
+        buffer = frames.pop() ?? "";
+        for (const frame of frames) {
+          let eventName = "message";
+          let dataLine = "";
+          for (const line of frame.split("\n")) {
+            if (line.startsWith("event:")) eventName = line.slice(6).trim();
+            else if (line.startsWith("data:")) dataLine = line.slice(5).trim();
+          }
+          if (!dataLine) continue;
+          if (eventName === "progress") {
+            handleFlowProgress(JSON.parse(dataLine) as Record<string, unknown>);
+          } else if (eventName === "result") {
+            applyAuditResult(JSON.parse(dataLine) as AuditResponse);
+            return;
+          } else if (eventName === "error") {
+            streamError = String((JSON.parse(dataLine) as { error?: string }).error ?? "Stream error");
+          }
+        }
+      }
+
+      if (streamError) throw new Error(streamError);
+      throw new Error("Stream ended without a result");
     } catch (error) {
+      if (!deterministicRetry) {
+        // The LLM layer may have died mid-stream (provider rate limits) —
+        // rerun on the deterministic engine so the intercept still lands a verdict.
+        runAudit(targetPhone, targetAmount, true);
+        return;
+      }
       const message = error instanceof Error ? error.message : "Unknown error";
       setRequestStatus("error");
+      setFlowPhase("error");
       setLiveEvents((prev) => [
         ...prev,
         {
@@ -898,9 +1061,13 @@ export default function AegisTelDashboard() {
                     <div className="text-[10px] text-emerald-400 text-center py-1">No blind spots in this playbook.</div>
                   )}
 
-                  <div className="text-[9px] text-slate-600 border-t border-slate-900 pt-1.5 flex justify-between">
-                    <span>{drillResult.playbook}</span>
-                    <span>{drillResult.drill_id}</span>
+                  <div className="text-[9px] text-slate-600 border-t border-slate-900 pt-1.5 flex justify-between items-center gap-2">
+                    <span className="truncate">{drillResult.playbook}</span>
+                    <span className="shrink-0 ml-1">
+                      <span className={`px-1.5 py-0.5 rounded border ${drillResult.generated_by_llm ? "text-violet-300 border-violet-800/60 bg-violet-950/40" : "text-slate-400 border-slate-800 bg-slate-900/60"}`}>
+                        {drillResult.generated_by_llm ? "FRAUD GENIE" : "SAMPLED"} LINEUP
+                      </span>
+                    </span>
                   </div>
                 </div>
               ) : drillLoading ? (
@@ -918,6 +1085,14 @@ export default function AegisTelDashboard() {
         </div>
 
         <div className="lg:col-span-8 space-y-6">
+          <AuditFlowDiagram
+            phase={flowPhase}
+            tools={flowTools}
+            specialist={flowSpecialist}
+            auditor={flowAuditor}
+            llmModel={flowLlmModel}
+            verdict={flowVerdict}
+          />
           <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-6 shadow-lg space-y-5">
             <div className="flex justify-between items-center border-b border-slate-800 pb-3">
               <span className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-2">
@@ -1088,6 +1263,60 @@ export default function AegisTelDashboard() {
                   </div>
                 </div>
 
+                <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4 shadow-[0_8px_24px_rgba(2,8,23,0.35)] space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-slate-400 flex items-center gap-2">
+                      <Terminal className="w-3.5 h-3.5 text-cyan-400" /> Evidence Explorer
+                    </div>
+                    <span className="text-[10px] text-slate-500">
+                      {(() => {
+                        const tools = auditResult.telemetry.tool_results ?? [];
+                        const sdk = tools.filter((t) => t.source === "Nokia NaC SDK").length;
+                        const rest = tools.filter((t) => t.source === "CAMARA REST").length;
+                        return `${tools.length} tool calls • ${sdk} SDK • ${rest} REST • ${tools.length - sdk - rest} sandbox`;
+                      })()}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    {(auditResult.telemetry.tool_results ?? []).map((tool) => (
+                      <details key={tool.name} className="rounded-lg border border-slate-800 bg-slate-950/70 group">
+                        <summary className="cursor-pointer px-3 py-2 flex items-center justify-between gap-2 text-[11px]">
+                          <span className="flex items-center gap-2 font-bold text-slate-200">
+                            <span className={`w-1.5 h-1.5 rounded-full ${tool.success ? "bg-emerald-400" : "bg-rose-400"}`} />
+                            {tool.name}
+                          </span>
+                          <span className="flex items-center gap-2">
+                            <span className={`text-[9px] px-1.5 py-0.5 rounded border font-bold ${
+                              tool.source === "Nokia NaC SDK" ? "text-cyan-300 border-cyan-800 bg-cyan-950"
+                              : tool.source === "CAMARA REST" ? "text-violet-300 border-violet-800 bg-violet-950"
+                              : "text-slate-400 border-slate-700 bg-slate-950"
+                            }`}>
+                              {tool.source === "Nokia NaC SDK" ? "LIVE SDK" : tool.source === "CAMARA REST" ? "REST" : "SANDBOX"}
+                            </span>
+                            {tool.duration_ms != null ? <span className="text-[9px] text-slate-500">{tool.duration_ms}ms</span> : null}
+                          </span>
+                        </summary>
+                        <pre className="px-3 pb-3 text-[9px] text-slate-400 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap break-all border-t border-slate-900/70 pt-2">
+                          {JSON.stringify(tool.payload, null, 2)}
+                        </pre>
+                      </details>
+                    ))}
+                  </div>
+
+                  {auditResult.raw_output ? (
+                    <details className="rounded-lg border border-violet-900 bg-violet-950/20">
+                      <summary className="cursor-pointer px-3 py-2 text-[11px] font-bold text-violet-300 flex items-center justify-between">
+                        <span className="flex items-center gap-2">LLM Raw Output (specialist + auditor reasoning)</span>
+                        <span className="text-[9px] text-slate-500">{auditResult.used_fallback ? "deterministic" : "model-authored"}</span>
+                      </summary>
+                      <pre className="px-3 pb-3 text-[10px] text-slate-300 overflow-x-auto max-h-64 overflow-y-auto whitespace-pre-wrap break-all border-t border-violet-900/70 pt-2">
+                        {auditResult.raw_output}
+                      </pre>
+                    </details>
+                  ) : null}
+                </div>
+
                 <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4 shadow-[0_8px_24px_rgba(2,8,23,0.35)]">
                   <button
                     type="button"
@@ -1193,8 +1422,8 @@ export default function AegisTelDashboard() {
 
             {liveEvents.length > 0 ? (
               <div className="relative pl-4 space-y-4 before:absolute before:left-2 before:top-3 before:bottom-3 before:w-0.5 before:bg-slate-800">
-                {liveEvents.map((event) => (
-                  <div key={event.id} className="relative pl-6 space-y-1.5">
+                {liveEvents.map((event, index) => (
+                  <div key={`${event.id}-${index}`} className="relative pl-6 space-y-1.5">
                     <div className="absolute -left-4.25 top-1 w-3 h-3 rounded-full bg-slate-950 border-2 border-cyan-400" />
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-bold text-cyan-400">{event.type.toUpperCase()}</span>

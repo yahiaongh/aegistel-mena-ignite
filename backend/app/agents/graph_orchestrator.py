@@ -49,6 +49,7 @@ class AuditState(TypedDict):
     errors: List[str]
     request_context: Dict[str, Any]
     specialist_output: Dict[str, Any]
+    progress_callback: Any | None
 
 
 SYSTEM_PROMPT = """You are AegisTel's Autonomous Telecom Fraud Detection Agent.
@@ -100,6 +101,7 @@ async def crew_node(state: AuditState) -> Dict[str, Any]:
         request_context,
         state.get("memory_context", []),
         state.get("tool_results", []),
+        state.get("progress_callback"),
     )
     assessment = FinalAssessment(**specialist_output["assessment"])
     return {
@@ -118,7 +120,7 @@ builder.add_edge("crew", END)
 aegis_graph = builder.compile()
 
 
-async def execute_audit(request: AuditRequest) -> AuditResponse:
+async def execute_audit(request: AuditRequest, progress_callback: Any | None = None) -> AuditResponse:
     request_context = {
         "msisdn": request.msisdn,
         "amount": request.amount,
@@ -127,12 +129,18 @@ async def execute_audit(request: AuditRequest) -> AuditResponse:
         "request_qod": request.request_qod_slice,
         "transaction_type": request.transaction_type,
         "metadata": request.metadata,
+        "force_deterministic": bool(request.metadata.get("_force_deterministic")),
     }
     print(f"[Graph Orchestrator] Request context: {request_context}")
     memory_context = await memory_engine.retrieve_past_incidents_async(
         request.msisdn,
         f"fraud pattern {request.transaction_type} {request.current_location.latitude} {request.current_location.longitude}",
     )
+    if progress_callback is not None:
+        try:
+            progress_callback({"type": "memory:done", "incidents": len(memory_context)})
+        except Exception:
+            pass
     print(f"[Memory Engine] Retrieved {len(memory_context)} past incidents for {request.msisdn}")
 
     initial_input: AuditState = {
@@ -156,6 +164,7 @@ async def execute_audit(request: AuditRequest) -> AuditResponse:
         "errors": [],
         "request_context": request_context,
         "specialist_output": {},
+        "progress_callback": progress_callback,
     }
     final_state = await aegis_graph.ainvoke(initial_input)
     specialist_output = final_state.get("specialist_output", {}) if isinstance(final_state.get("specialist_output"), dict) else {}
@@ -207,6 +216,7 @@ async def execute_audit(request: AuditRequest) -> AuditResponse:
                 name=item.get("name", "tool"),
                 success=True,
                 source=item.get("source", "sandbox"),
+                duration_ms=item.get("duration_ms"),
                 payload=item,
             )
             for item in tool_results
@@ -251,4 +261,5 @@ async def execute_audit(request: AuditRequest) -> AuditResponse:
         recommended_action=assessment.recommended_action,
         agent_trace=trace,
         used_fallback=specialist_output.get("used_fallback", False),
+        raw_output=specialist_output.get("raw_output"),
     )

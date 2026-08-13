@@ -25,6 +25,28 @@ class NetworkMemoryEngine:
         if Memory is None:
             return
         try:
+            # mem0's LLM layer performs extraction/synthesis (one Gemini request
+            # per memory op). Gemini's free tier is per-model and tiny (~20 RPD
+            # on flash), and the crew needs that quota — so route mem0's LLM to
+            # Groq (llama-3.1-8b-instant has a 500k TPD free bucket), keeping
+            # Gemini only as fallback. Embeddings stay on Gemini (separate,
+            # generous quota).
+            if settings.GROQ_API_KEY:
+                llm_config = {
+                    "provider": "groq",
+                    "config": {
+                        "api_key": settings.GROQ_API_KEY,
+                        "model": "llama-3.1-8b-instant",
+                    },
+                }
+            else:
+                llm_config = {
+                    "provider": "gemini",
+                    "config": {
+                        "api_key": settings.GOOGLE_API_KEY,
+                        "model": settings.GEMINI_MODEL,
+                    },
+                }
             config = {
                 "vector_store": {
                     "provider": "qdrant",
@@ -35,13 +57,7 @@ class NetworkMemoryEngine:
                         "embedding_model_dims": 768,
                     },
                 },
-                "llm": {
-                    "provider": "gemini",
-                    "config": {
-                        "api_key": settings.GOOGLE_API_KEY,
-                        "model": settings.GEMINI_MODEL,
-                    },
-                },
+                "llm": llm_config,
                 "embedder": {
                     "provider": "gemini",
                     "config": {

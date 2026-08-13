@@ -87,11 +87,12 @@ graph TD
 ## Demo workflow
 
 1. The user submits a transaction request with MSISDN, amount, location, and QoD preference.
-2. The orchestrator selects the relevant telecom checks.
-3. Tool outputs are normalized into specialist assessments.
-4. The system returns a structured result: status, risk score, reasoning, recommendation, and evidence trail.
-5. The UI displays the verdict and the live trace for the operator.
-6. **Adversarial Drill** — the operator can flip roles: the same multi-agent engine plays the attacker, executing a red-team playbook (SIM-swap OTP interception, cross-border mule relays, congestion-synchronized strikes, staged micro-attacks, clean control runs) against the live crew. The drill grades defense readiness (0-100 and A-F), surfaces the signal each play was caught on, and reports the blind spots the red team actually discovered — including first-strike micro-attacks under the flat amount threshold that read clean on all seven signals.
+2. The dashboard opens a **live SSE stream** (`POST /api/v1/audit/stream`): the request/response flow diagram animates each CAMARA tool as it returns (source + latency), the deterministic synthesis, the LLM specialist/auditor layer (with the model that answered), and finally the verdict — all in real time.
+3. The orchestrator selects the relevant telecom checks.
+4. Tool outputs are normalized into specialist assessments.
+5. The system returns a structured result: status, risk score, reasoning, recommendation, and evidence trail — every tool's raw payload is inspectable in the Evidence Explorer, alongside the LLM raw output.
+6. The UI displays the verdict and the live trace for the operator.
+7. **Adversarial Drill** — the operator can flip roles: the same multi-agent engine plays the attacker, executing a red-team lineup against the live crew. The attacker is dynamic: every run draws a fresh 6-play lineup from a 14-scenario arsenal (SIM-swap OTP interception, cross-border mule relays, congestion-synchronized strikes, staged micro-attacks, mid-size cash-out windows, clean control runs). When an LLM provider is available, the "Fraud Genie" curates the run's names, intents, amounts and regions; otherwise a seeded sampler rotates the arsenal — and any narration failure degrades to the sampler, so the drill never fails. The drill grades defense readiness (0-100 and A-F), surfaces the signal each play was caught on, and reports the blind spots the red team actually discovered. Three structural holes rotate between runs: sub-threshold first strikes (< $25k, clean line), mid-size transfers ($25k-$99k, clean line) where QoD is provisioned yet approval still clears, and Medium-congestion windows that carry no signal at all.
 
 ### Example demo scenario
 
@@ -104,7 +105,7 @@ A sample number such as +99999991000 triggers the expected high-risk signals in 
 - roaming context
 - QoD step-up recommendation
 
-Every signal above is also exercised by the drill playbook: play-01 (OTP Intercept via SIM Swap) and play-02 (Cross-Border Mule Relay) hit the exact +99999991000 profile, so the red-team panel shows the same drama as the live audit.
+Every signal above is also exercised by the drill: the `otp-sim-swap`, `cross-border-mule`, `congestion-strike` and `mule-relay` archetypes hit the exact +99999991000 profile, so the red-team panel shows the same drama as the live audit.
 
 ---
 
@@ -196,7 +197,7 @@ docker-compose up --build -d
 
 The current implementation has been validated with fresh checks:
 
-- Backend regression tests: 58 passed (`cd backend && .venv/bin/python -m pytest tests/ -q`)
+- Backend regression tests: 61 passed (`cd backend && .venv/bin/python -m pytest tests/ -q`)
 - Backend drill tests: 9 passed (`cd backend && .venv/bin/python -m pytest tests/test_adversarial_drill.py -q`)
 - Frontend typecheck and lint: clean (`cd frontend && npx tsc --noEmit && npm run lint`)
 - API smoke: `GET /api/health` returns `"active_tool_count": 7`; `POST /api/v1/drill/run` returns a full drill report.
@@ -213,21 +214,21 @@ curl -X POST http://localhost:3000/api/v1/drill/run \
   -H "Content-Type: application/json" -d '{"use_llm": false}'   # deterministic, ~5s
 ```
 
-Remove `"use_llm": false` for the full LLM crew run (plays execute concurrently; ~20-40s). Expect `readiness_score`, `grade`, `outcomes`, one entry per play in `plays[]` (verdict + risk + outcome + `detected_via` signals), and `blind_spots[]` containing the Micro-Staging First Strike play.
+Remove `"use_llm": false` for the full LLM crew run (plays execute concurrently; ~20-40s). Expect `readiness_score`, `grade`, `outcomes`, one entry per play in `plays[]` (verdict + risk + outcome + `detected_via` signals), and `blind_spots[]` for whatever holes this run's lineup exposed. Rerun the drill and compare — names, intents, amounts and regions change every run.
 
 **3. UI-level (the demo):**
 
 1. Open `http://localhost:3000` — the chip next to "APIs Integrated" must read **7 CAMARA Signals** (it re-polls every 20s; refresh the page if it was loaded before the backend started).
 2. Bottom of the left column: **Red Team — Adversarial Drill** card. Click **RUN ADVERSARIAL DRILL**.
 3. The button switches to "RED TEAM ENGAGED...", the Live Audit Trace shows `DRILL` events, and a voice briefing plays on completion.
-4. Expected results: readiness bar + grade, outcome chips (BLOCKED / ESCALATED / PARTIALLY_MISSED / CLEARED / PARTIALLY_MISSED), six play cards with threat level, defense verdict and the signals that caught each play, and an amber **Blind Spot Discovered** box (Micro-Staging First Strike) with a recommendation.
+4. Expected results: readiness bar + grade, outcome chips (BLOCKED / ESCALATED / PARTIALLY_MISSED / CLEARED), six play cards with threat level, defense verdict and the signals that caught each play, and an amber **Blind Spot Discovered** box (the lineups in this run, e.g. Micro-Staging First Strike and/or QoD-Provisioned Transfer) with a recommendation.
 5. If a run fails, the red team card now shows the real error inline (banner) and the trace records `error` events — don't ship a "nothing happened" state.
 
 **4. Expected numbers** (`tests/test_adversarial_drill.py` pins the deterministic behavior):
 
-- Deterministic run: readiness **73.3 / B** — 4 ESCALATED, 1 PARTIALLY_MISSED, 1 CLEARED.
-- LLM run (observed): readiness **81.7 / A** — 2 BLOCKED (crew REJECTED them), 2 ESCALATED, 1 PARTIALLY_MISSED, 1 CLEARED, `used_fallback: false`.
-- The blind spot is identical in both paths — the drill must find a real weakness, and the control play (Clean-Line Control Run) must never manufacture risk.
+- Deterministic runs (seeded): every run has 6 plays — always a LOW clean control run (CLEARED), always ≥ 2 blind-spot-prone scenarios (PARTIALLY_MISSED), always ≥ 2 heavy-signal plays (BLOCKED / ESCALATED), and the blind-spot set rotates between runs.
+- LLM runs (observed): the Fraud Genie curates fresh names/intents (e.g. "Rush Hour Robbery", "Phantom Transfer Saga"); a curated clean-sweep lineup scored 100.0 / A+ with the honest "no blind spots in this lineup" finding.
+- The blind spot is different between runs — the drill must find a real weakness, the control play must never manufacture risk, and any narration failure degrades to the sampler instead of breaking the drill.
 
 ---
 

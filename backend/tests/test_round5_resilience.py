@@ -48,7 +48,7 @@ def test_prompt_descriptions_stay_compact_for_large_memory_context():
     assert len(risk_description) // 4 < 5000
 
 
-def test_memory_engine_uses_gemini_llm_provider(monkeypatch):
+def test_memory_engine_prefers_groq_llm_and_falls_back_to_gemini(monkeypatch):
     captured = {}
 
     class FakeMemory:
@@ -58,9 +58,17 @@ def test_memory_engine_uses_gemini_llm_provider(monkeypatch):
             return cls()
 
     monkeypatch.setattr(memory_agent, "Memory", FakeMemory)
+    monkeypatch.setattr(settings, "GROQ_API_KEY", "groq-test-key")
 
     engine = memory_agent.NetworkMemoryEngine()
 
     assert engine.memory is not None
+    assert captured["llm"]["provider"] == "groq"
+    assert captured["llm"]["config"]["model"] == "llama-3.1-8b-instant"
+    assert captured["embedder"]["provider"] == "gemini"
+
+    monkeypatch.setattr(settings, "GROQ_API_KEY", "")
+    captured.clear()
+    engine = memory_agent.NetworkMemoryEngine()
     assert captured["llm"]["provider"] == "gemini"
     assert captured["llm"]["config"]["model"] == settings.GEMINI_MODEL
