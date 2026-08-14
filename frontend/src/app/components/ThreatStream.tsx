@@ -34,17 +34,17 @@ export default function ThreatStream({ onSelectThreat }: { onSelectThreat: (msis
           <div
             key={threat.id}
             onClick={() => onSelectThreat(threat.msisdn, threat.amount)}
-            className="cursor-pointer bg-slate-950 hover:bg-slate-900 border border-slate-800 hover:border-cyan-500/50 p-2.5 rounded-lg flex items-center justify-between transition group"
+            className="cursor-pointer bg-slate-950 hover:bg-slate-900 border border-slate-800 hover:border-cyan-500/50 p-2.5 rounded-lg flex items-center justify-between gap-2 transition group"
           >
-            <div className="space-y-0.5">
-              <div className="flex items-center gap-2 text-xs font-bold text-slate-200">
+            <div className="space-y-0.5 min-w-0">
+              <div className="flex items-center gap-2 text-xs font-bold text-slate-200 flex-wrap">
                 <span className="text-cyan-400">[{threat.location}]</span>
-                <span>{threat.msisdn}</span>
+                <span className="truncate">{threat.msisdn}</span>
               </div>
-              <div className="text-[10px] text-slate-500 flex items-center gap-2">
-                <span>{threat.type}</span>
+              <div className="text-[10px] text-slate-500 flex items-center gap-2 min-w-0">
+                <span className="truncate" title={threat.type}>{threat.type}</span>
                 <span>•</span>
-                <span className="text-amber-400">${threat.amount.toLocaleString()}</span>
+                <span className="text-amber-400 shrink-0">${threat.amount.toLocaleString()}</span>
               </div>
             </div>
 
