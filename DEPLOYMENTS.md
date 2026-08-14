@@ -143,7 +143,7 @@ curl -s <DEPLOYED_BASE_URL>/api/health
 # A full audit (expect APPROVED/REJECTED/BLOCKED etc. depending on payload)
 curl -s -X POST <DEPLOYED_BASE_URL>/api/v1/audit \
   -H 'Content-Type: application/json' \
-  -d '{"msisdn":"+9715xxxxxxxx","amount":1000,"latitude":25.2,"longitude":55.2,"request_qod":false}'
+  -d '{"msisdn":"+9715xxxxxxxx","amount":1000,"transaction_type":"WIRE_TRANSFER","current_location":{"latitude":25.2,"longitude":55.2},"request_qod_slice":false}'
 ```
 
 Run the backend test suite before pushing:

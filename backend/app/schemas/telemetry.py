@@ -23,7 +23,7 @@ class LocationInput(BaseModel):
 class AuditRequest(BaseModel):
     msisdn: str
     amount: float
-    transaction_type: str
+    transaction_type: str = "WIRE_TRANSFER"
     current_location: LocationInput
     request_qod_slice: bool = False
     metadata: Dict[str, Any] = Field(default_factory=dict)

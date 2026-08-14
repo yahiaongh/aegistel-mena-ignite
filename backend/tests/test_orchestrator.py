@@ -99,3 +99,79 @@ def test_cross_border_risk_requires_actual_roaming_not_memory():
     assert result.telemetry.roaming_status == "DOMESTIC"
     assert result.telemetry.cross_border_risk is False
     memory_engine.clear_all_memory()
+
+
+def test_simulator_subscriber_is_immune_to_memory_poisoning():
+    # Regression: the documented sandbox subscriber +99999991001 accumulated
+    # HIGH/CRITICAL incidents during demo testing, which escalated every
+    # subsequent clean audit into STEP_UP_REQUIRED via memory weighting. The
+    # simulator subscribers are synthetic demo identities: their memory must be
+    # excluded so the clean control case stays honest and repeatable.
+    from app.agents.graph_orchestrator import SIMULATOR_MSISDNS
+    from app.agents.memory_agent import memory_engine
+
+    assert "+99999991001" in SIMULATOR_MSISDNS
+    memory_engine.clear_all_memory()
+    memory_engine.record_incident(
+        "+99999991001",
+        "polluted demo history",
+        {"status": "BLOCKED", "risk_score": "CRITICAL"},
+    )
+
+    request = AuditRequest(
+        msisdn="+99999991001",
+        amount=1500.0,
+        transaction_type="WIRE_TRANSFER",
+        current_location=LocationInput(latitude=24.7, longitude=46.7),
+        request_qod_slice=True,
+    )
+
+    result = asyncio.run(execute_audit(request))
+
+    assert result.status == "APPROVED"
+    assert result.risk_score == "LOW"
+    memory_engine.clear_all_memory()
+
+
+def test_simulator_subscriber_records_incidents_but_skips_weighting():
+    # Simulator audits MUST still be recorded: the operator history panel is a
+    # core feature and the demo numbers are exactly what gets audited. What is
+    # excluded is memory-based verdict weighting (retrieval), so the recorded
+    # trail never escalates a clean control case.
+    from app.agents.memory_agent import memory_engine
+
+    memory_engine.clear_all_memory()
+
+    request = AuditRequest(
+        msisdn="+99999991000",
+        amount=30000.0,
+        transaction_type="WIRE_TRANSFER",
+        current_location=LocationInput(latitude=24.0, longitude=46.0),
+        request_qod_slice=False,
+    )
+
+    result = asyncio.run(execute_audit(request))
+
+    incidents = memory_engine.list_all_incidents("+99999991000")
+    assert len(incidents) == 1
+    assert incidents[0]["metadata"]["risk_score"] == result.risk_score
+    assert incidents[0]["metadata"]["status"] == result.status
+
+    # Weighting is still excluded: a polluted history for the clean control
+    # subscriber does not change its verdict.
+    memory_engine.record_incident(
+        "+99999991001",
+        "polluted demo history",
+        {"status": "BLOCKED", "risk_score": "CRITICAL"},
+    )
+    clean = AuditRequest(
+        msisdn="+99999991001",
+        amount=1500.0,
+        transaction_type="WIRE_TRANSFER",
+        current_location=LocationInput(latitude=24.7, longitude=46.7),
+        request_qod_slice=True,
+    )
+    clean_result = asyncio.run(execute_audit(clean))
+    assert clean_result.status == "APPROVED"
+    assert clean_result.risk_score == "LOW"
+    memory_engine.clear_all_memory()

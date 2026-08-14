@@ -39,6 +39,43 @@ def test_reconcile_sanitizes_country_claim_when_roaming_country_empty():
     assert any("sanitized reasoning" in msg for msg in mismatch_reasons)
 
 
+def test_reconcile_floor_substitutes_coherent_reasoning_on_downgrade():
+    # Regression: a CrewAI output that downgrades the deterministic STEP_UP
+    # verdict to APPROVED must keep the enforced structured status AND must not
+    # leave contradicting prose ("approved") behind next to a STEP_UP verdict.
+    parsed = {
+        "status": "APPROVED",
+        "risk_score": "LOW",
+        "reasoning": "Given the lack of strong risk signals, the status is changed to APPROVED.",
+        "recommended_action": "None",
+        "qod_session_active": False,
+    }
+    deterministic = {
+        "assessment": {
+            "status": "STEP_UP_REQUIRED",
+            "risk_score": "HIGH",
+            "sim_swap_detected": False,
+            "last_sim_swap_date": None,
+            "location_verification_match": True,
+            "roaming_status": "DOMESTIC",
+            "roaming_country": None,
+            "qod_session_active": False,
+            "qod_profile": None,
+            "reasoning": "Specialist synthesis identified: Prior incident memory for the subscriber corroborates elevated risk (high-severity history); recurrence evidence is weighted into this verdict.",
+            "recommended_action": "Escalate the payment with a QoD-assisted step-up and human review.",
+        }
+    }
+
+    assessment, mismatch_reasons = _reconcile_crew_output(parsed, deterministic)
+
+    assert assessment["status"] == "STEP_UP_REQUIRED"
+    assert assessment["risk_score"] == "HIGH"
+    assert "APPROVED" not in assessment["reasoning"].upper()
+    assert assessment["reasoning"] == deterministic["assessment"]["reasoning"]
+    assert assessment["recommended_action"] == deterministic["assessment"]["recommended_action"]
+    assert any("substituting deterministic reasoning" in msg for msg in mismatch_reasons)
+
+
 def test_reachability_status_is_built_from_tool_evidence():
     result = synthesize_specialist_assessment(
         {"msisdn": "+99999991002", "amount": 120000, "request_qod": False},

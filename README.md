@@ -80,7 +80,7 @@ graph TD
 - Backend: Python, FastAPI, LangGraph, Pydantic
 - Agent reasoning: CrewAI as the primary reasoning path, with deterministic synthesis as the fallback when model calls fail or quotas are exhausted
 - Frontend: Next.js, TypeScript, Tailwind-inspired UI, live evidence presentation
-- Memory: incident recall for fraud pattern correlation. Writes use a small LLM extraction step (Gemini) to index memory records, but reads currently use a local exact-match lookup fallback for stability; full semantic recall/search was deliberately deferred to avoid runtime hangs on demo hardware.
+- Memory: incident recall for fraud pattern correlation. Writes use a small LLM extraction step (Gemini) to index memory records, but reads currently use a local exact-match lookup fallback for stability; full semantic recall/search was deliberately deferred to avoid runtime hangs on demo hardware. Every audit is recorded (powering the operator's Audit History / risk-trend panel, which serves the most recent records first), but the documented sandbox simulator subscribers (`+99999991000` … `+99999991003`, `+9999123456`) are excluded from memory-based verdict *weighting*: they are synthetic demo identities whose "history" is a demo artifact, so the clean control case (`+99999991001`) stays honestly APPROVED across repeated demo sessions.
 
 ---
 
