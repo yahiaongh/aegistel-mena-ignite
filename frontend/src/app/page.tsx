@@ -7,6 +7,8 @@ import {
   AlertTriangle,
   CheckCircle2,
   Cpu,
+  ChevronDown,
+  ChevronUp,
   DollarSign,
   Globe,
   MapPin,
@@ -627,24 +629,24 @@ export default function AegisTelDashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-mono selection:bg-cyan-500 selection:text-slate-950">
-      <nav className="border-b border-slate-800 bg-slate-900/50 backdrop-blur sticky top-0 z-50 px-6 py-3.5 flex justify-between items-center">
-        <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-cyan-950 border border-cyan-800 text-cyan-400">
+    <div className="min-h-screen bg-slate-950 text-slate-100 font-mono selection:bg-cyan-500 selection:text-slate-950 overflow-x-hidden">
+      <nav className="border-b border-slate-800 bg-slate-900/50 backdrop-blur sticky top-0 z-50 px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="p-2 rounded-lg bg-cyan-950 border border-cyan-800 text-cyan-400 shrink-0">
             <Activity className="w-5 h-5 animate-pulse" />
           </div>
-          <div>
-            <div className="flex items-center gap-2">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
               <h1 className="text-base font-bold tracking-wider text-slate-100">AEGISTEL</h1>
               <span className="text-[10px] bg-cyan-950 text-cyan-400 border border-cyan-800 px-1.5 py-0.5 rounded font-bold">
                 NOKIA NaC CAMARA SWARM
               </span>
             </div>
-            <p className="text-[11px] text-slate-400">Multi-Agent Telecom Fraud & Network Intelligence Platform</p>
+            <p className="hidden sm:block text-[11px] text-slate-400 truncate">Multi-Agent Telecom Fraud & Network Intelligence Platform</p>
           </div>
         </div>
 
-        <div className="flex items-center gap-3 text-xs">
+        <div className="flex flex-wrap items-center gap-2 text-xs ml-auto">
           <div className={`flex items-center gap-2 px-3 py-1.5 rounded-md border ${requestStatus === "ready" ? "bg-emerald-950 border-emerald-800 text-emerald-300" : requestStatus === "requesting" ? "bg-cyan-950 border-cyan-800 text-cyan-300" : "bg-slate-900 border-slate-800 text-slate-400"}`}>
             <RadioTower className="w-3.5 h-3.5" />
             <span className="font-bold">API {requestStatus.toUpperCase()}</span>
@@ -657,18 +659,18 @@ export default function AegisTelDashboard() {
           )}
           <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-md">
             <RadioTower className="w-3.5 h-3.5 text-cyan-400" />
-            <span className="text-slate-400">APIs Integrated:</span>
-            <span className="text-cyan-300 font-bold">{activeSignalCount ?? "—"} CAMARA Signals</span>
+            <span className="hidden sm:inline text-slate-400">APIs Integrated:</span>
+            <span className="text-cyan-300 font-bold">{activeSignalCount ?? "—"} <span className="hidden sm:inline">CAMARA Signals</span></span>
           </div>
           <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-md">
             <ShieldCheck className="w-3.5 h-3.5 text-amber-400" />
-            <span className="text-slate-400">Protected this session:</span>
+            <span className="hidden sm:inline text-slate-400">Protected this session:</span>
             <span className="text-amber-300 font-bold">${sessionStats.protectedAmount.toLocaleString()}</span>
           </div>
         </div>
       </nav>
 
-      <div className="p-6 max-w-[1600px] mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <div className="p-4 sm:p-6 max-w-[1600px] mx-auto grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-6">
         <div className="lg:col-span-4 space-y-6">
           <ThreatStream onSelectThreat={handleSelectThreat} />
 
@@ -677,7 +679,7 @@ export default function AegisTelDashboard() {
               <h2 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-2">
                 <Sliders className="w-4 h-4 text-cyan-400" /> CAMARA Audit Controls
               </h2>
-              <span className="text-[10px] text-slate-500">Nokia NaC Sandbox</span>
+              <span className="text-[10px] text-slate-200">Nokia NaC Sandbox</span>
             </div>
 
             {/* <button
@@ -732,12 +734,33 @@ export default function AegisTelDashboard() {
                 <label className="text-[11px] text-slate-400 mb-1 flex items-center gap-1.5">
                   <DollarSign className="w-3.5 h-3.5 text-amber-400" /> Wire Transfer Amount ($)
                 </label>
-                <input
-                  type="number"
-                  value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-amber-300 font-mono focus:outline-none focus:border-amber-500"
-                />
+                <div className="relative">
+                  <input
+                    type="number"
+                    value={amount}
+                    min={0}
+                    onChange={(e) => setAmount(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 pr-9 text-xs text-amber-300 font-mono focus:outline-none focus:border-amber-500"
+                  />
+                  <div className="absolute inset-y-0 right-0 flex flex-col border-l border-slate-800">
+                    <button
+                      type="button"
+                      onClick={() => setAmount(String((parseFloat(amount || "0") || 0) + 1000))}
+                      aria-label="Increase amount"
+                      className="flex-1 w-7 flex items-center justify-center rounded-tr-lg bg-slate-900 text-amber-400/80 hover:text-amber-300 hover:bg-slate-800 border-b border-slate-800 transition cursor-pointer"
+                    >
+                      <ChevronUp className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAmount(String(Math.max(0, (parseFloat(amount || "0") || 0) - 1000)))}
+                      aria-label="Decrease amount"
+                      className="flex-1 w-7 flex items-center justify-center rounded-br-lg bg-slate-900 text-amber-400/80 hover:text-amber-300 hover:bg-slate-800 transition cursor-pointer"
+                    >
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-2">
@@ -818,10 +841,10 @@ export default function AegisTelDashboard() {
                 <div className="text-[10px] text-slate-400 uppercase">Session Verdict Distribution</div>
                 <div className="text-xs text-slate-300 mb-3">Counts by audit outcome in this browser session.</div>
               </div>
-              <div className="h-40 w-full mt-2">
+              <div className="h-auto sm:h-40 w-full mt-2">
                 {Object.values(sessionStatusCounts).reduce((a, b) => a + b, 0) > 0 ? (
-                  <div className="grid grid-cols-[1fr_0.95fr] gap-3 h-full">
-                    <div className="h-full">
+                  <div className="grid grid-cols-1 sm:grid-cols-[1fr_0.95fr] gap-3 sm:h-full">
+                    <div className="h-44 sm:h-full w-full">
                       <ResponsiveContainer width="100%" height="100%">
                         <PieChart>
                           <Pie
@@ -833,8 +856,8 @@ export default function AegisTelDashboard() {
                               { name: "REJECTED", value: sessionStatusCounts.REJECTED },
                               { name: "BLOCKED", value: sessionStatusCounts.BLOCKED },
                             ]}
-                            innerRadius={18}
-                            outerRadius={36}
+                            innerRadius={34}
+                            outerRadius={56}
                             paddingAngle={2}
                           >
                             <Cell fill="#10b981" />
@@ -861,7 +884,7 @@ export default function AegisTelDashboard() {
                     </div>
                   </div>
                 ) : (
-                  <div className="flex h-full items-center justify-center text-[11px] text-slate-500">No session data yet; run an audit to populate the distribution.</div>
+                  <div className="flex h-full items-center justify-center text-[11px] text-slate-200">No session data yet; run an audit to populate the distribution.</div>
                 )}
               </div>
               {Object.values(sessionStatusCounts).reduce((a, b) => a + b, 0) > 0 ? (
@@ -900,29 +923,29 @@ export default function AegisTelDashboard() {
                     </RadarChart>
                   </ResponsiveContainer>
                 ) : (
-                  <div className="flex h-full items-center justify-center text-[11px] text-slate-500">Run an audit to see which signals drove this verdict.</div>
+                  <div className="flex h-full items-center justify-center text-[11px] text-slate-200">Run an audit to see which signals drove this verdict.</div>
                 )}
               </div>
               {auditResult ? (
                 <div className="mt-3 space-y-2 text-[11px] text-slate-400">
                   <div className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-cyan-400" />A value of 1 means that signal was flagged; 0 means it was clear.</div>
-                  <div className="grid grid-cols-2 gap-2 text-slate-300">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-slate-300">
                     <div className="rounded-lg border border-slate-800 bg-slate-950/70 p-2">
-                      <div className="text-[10px] text-slate-500 uppercase">SIM Swap</div>
+                      <div className="text-[10px] text-slate-200 uppercase">SIM Swap</div>
                       <div className="font-semibold text-slate-100">{auditResult.telemetry.sim_swap_detected ? 'Flagged' : 'Clean'}</div>
                     </div>
                     <div className="rounded-lg border border-slate-800 bg-slate-950/70 p-2">
-                      <div className="text-[10px] text-slate-500 uppercase">QoD</div>
+                      <div className="text-[10px] text-slate-200 uppercase">QoD</div>
                       <div className="font-semibold text-slate-100">{auditResult.telemetry.qod_status ? (
                         <span className={auditResult.status === "APPROVED" ? "text-cyan-300" : "text-rose-400"}>
                           {`${auditResult.telemetry.qod_status}${auditResult.telemetry.qod_profile ? ' • ' + auditResult.telemetry.qod_profile : ''}`}
                         </span>
                       ) : (
-                        <span className="text-slate-500">NONE</span>
+                        <span className="text-slate-200">NONE</span>
                       )}</div>
                     </div>
                     <div className="rounded-lg border border-slate-800 bg-slate-950/70 p-2">
-                      <div className="text-[10px] text-slate-500 uppercase">Number Verification</div>
+                      <div className="text-[10px] text-slate-200 uppercase">Number Verification</div>
                       <div className="font-semibold text-slate-100">
                         <span className={(auditResult.telemetry.number_verification_status || 'UNKNOWN') === 'VERIFIED' ? "text-emerald-400" : "text-rose-400"}>
                           {auditResult.telemetry.number_verification_status || 'UNKNOWN'}
@@ -930,7 +953,7 @@ export default function AegisTelDashboard() {
                       </div>
                     </div>
                     <div className="rounded-lg border border-slate-800 bg-slate-950/70 p-2">
-                      <div className="text-[10px] text-slate-500 uppercase">Cell Congestion</div>
+                      <div className="text-[10px] text-slate-200 uppercase">Cell Congestion</div>
                       <div className="font-semibold text-slate-100">
                         <span className={(auditResult.telemetry.max_congestion_level || 'low').toLowerCase() === 'high' ? "text-amber-400" : "text-emerald-400"}>
                           {auditResult.telemetry.max_congestion_level || 'LOW'}
@@ -943,7 +966,7 @@ export default function AegisTelDashboard() {
             </div>
 
             <div className="bg-slate-900/80 border border-rose-950 rounded-lg p-3">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="text-[10px] text-rose-400 uppercase tracking-wider flex items-center gap-1.5">
                   <Zap className="w-3 h-3" /> Red Team — Adversarial Drill
                 </div>
@@ -977,7 +1000,7 @@ export default function AegisTelDashboard() {
                   <div>
                     <div className="flex items-baseline justify-between text-[11px] mb-1">
                       <span className="text-slate-400 uppercase">Defense Readiness</span>
-                      <span className="font-bold text-rose-300">{drillResult.readiness_score}% <span className="text-slate-500">({drillResult.grade})</span></span>
+                      <span className="font-bold text-rose-300">{drillResult.readiness_score}% <span className="text-slate-200">({drillResult.grade})</span></span>
                     </div>
                     <div className="h-2 rounded bg-slate-950 border border-slate-800 overflow-hidden">
                       <div
@@ -1005,7 +1028,7 @@ export default function AegisTelDashboard() {
                   <div className="space-y-2">
                     {drillResult.plays.map((play) => (
                       <div key={play.id} className="border border-slate-800 bg-slate-950/70 rounded p-2.5">
-                        <div className="flex items-center justify-between gap-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
                           <span className="text-[11px] font-bold text-slate-200">{play.name}</span>
                           <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${
                             play.threat_level === "CRITICAL" ? "border-rose-700 bg-rose-950 text-rose-300"
@@ -1016,7 +1039,7 @@ export default function AegisTelDashboard() {
                             THREAT {play.threat_level}
                           </span>
                         </div>
-                        <div className="mt-1 text-[10px] text-slate-500 italic">{play.intent}</div>
+                        <div className="mt-1 text-[10px] text-slate-200 italic">{play.intent}</div>
                         <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[10px]">
                           <span className="text-slate-400">Defense:</span>
                           <span className="font-bold text-cyan-300">{play.verdict_status} / {play.defense_risk}</span>
@@ -1076,7 +1099,7 @@ export default function AegisTelDashboard() {
                   <span>Fraud Genie is writing attack plays... executing against the crew...</span>
                 </div>
               ) : (
-                <div className="mt-3 text-[11px] text-slate-500 italic border border-dashed border-slate-800 rounded p-3">
+                <div className="mt-3 text-[11px] text-slate-200 italic border border-dashed border-slate-800 rounded p-3">
                   No drill run yet this session. Run one to grade the defense against the playbook.
                 </div>
               )}
@@ -1108,9 +1131,9 @@ export default function AegisTelDashboard() {
               </div>
             ) : auditResult ? (
               <div className="space-y-5">
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                   <div className="bg-slate-950 border border-slate-800 p-3 rounded-lg space-y-1">
-                    <span className="text-[10px] text-slate-500 uppercase flex items-center gap-1">
+                    <span className="text-[10px] text-slate-200 uppercase flex items-center gap-1">
                       <Smartphone className="w-3 h-3 text-rose-400" /> SIM Swap History
                     </span>
                     <div className="text-xs font-bold">
@@ -1124,7 +1147,7 @@ export default function AegisTelDashboard() {
                   </div>
 
                   <div className="bg-slate-950 border border-slate-800 p-3 rounded-lg space-y-1 w-full">
-                    <span className="text-[10px] text-slate-500 uppercase flex items-center gap-1">
+                    <span className="text-[10px] text-slate-200 uppercase flex items-center gap-1">
                       <MapPin className="w-3 h-3 text-amber-400" /> Location & Geofence
                     </span>
                     <div className="text-xs font-bold">
@@ -1149,7 +1172,7 @@ export default function AegisTelDashboard() {
                   </div>
 
                   <div className="bg-slate-950 border border-slate-800 p-3 rounded-lg space-y-1">
-                    <span className="text-[10px] text-slate-500 uppercase flex items-center gap-1">
+                    <span className="text-[10px] text-slate-200 uppercase flex items-center gap-1">
                       <Globe className="w-3 h-3 text-sky-400" /> Roaming Telemetry
                     </span>
                     <div className="text-xs font-bold">
@@ -1161,14 +1184,14 @@ export default function AegisTelDashboard() {
                   </div>
 
                   <div className="bg-slate-950 border border-slate-800 p-3 rounded-lg space-y-1">
-                    <span className="text-[10px] text-slate-500 uppercase flex items-center gap-1">
+                    <span className="text-[10px] text-slate-200 uppercase flex items-center gap-1">
                       <Wifi className="w-3 h-3 text-purple-400" /> Reachability Status
                     </span>
                     <div className="text-xs font-bold text-slate-200">{auditResult.telemetry.reachability_status}</div>
                   </div>
 
                   <div className="bg-slate-950 border border-slate-800 p-3 rounded-lg space-y-1">
-                    <span className="text-[10px] text-slate-500 uppercase flex items-center gap-1">
+                    <span className="text-[10px] text-slate-200 uppercase flex items-center gap-1">
                       <ShieldCheck className="w-3 h-3 text-emerald-400" /> Number Verification
                     </span>
                     <div className="text-xs font-bold">
@@ -1181,7 +1204,7 @@ export default function AegisTelDashboard() {
                   </div>
 
                   <div className="bg-slate-950 border border-slate-800 p-3 rounded-lg space-y-1">
-                    <span className="text-[10px] text-slate-500 uppercase flex items-center gap-1">
+                    <span className="text-[10px] text-slate-200 uppercase flex items-center gap-1">
                       <Activity className="w-3 h-3 text-orange-400" /> Cell Congestion
                     </span>
                     <div className="text-xs font-bold">
@@ -1192,7 +1215,7 @@ export default function AegisTelDashboard() {
                   </div>
 
                   <div className="bg-slate-950 border border-slate-800 p-3 rounded-lg space-y-1 w-full">
-                    <span className="text-[10px] text-slate-500 uppercase flex items-center gap-1">
+                    <span className="text-[10px] text-slate-200 uppercase flex items-center gap-1">
                       <Radio className="w-3 h-3 text-indigo-400" /> QoD Slice Provisioning
                     </span>
                     <div className="text-xs font-bold">
@@ -1210,7 +1233,7 @@ export default function AegisTelDashboard() {
                             return <span className="text-slate-400">QoD REQUESTED</span>;
                           })()
                         ) : (
-                          <span className="text-slate-500">INACTIVE</span>
+                          <span className="text-slate-200">INACTIVE</span>
                         )}
                     </div>
                   </div>
@@ -1218,19 +1241,19 @@ export default function AegisTelDashboard() {
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <div className="bg-slate-950/80 border border-slate-800 p-4 rounded-lg">
-                    <div className="flex items-center gap-2 text-[10px] uppercase text-slate-500 mb-2">
+                    <div className="flex items-center gap-2 text-[10px] uppercase text-slate-200 mb-2">
                       <AlertTriangle className="w-3 h-3 text-amber-400" /> Evidence Strength
                     </div>
                     <div className="text-sm font-bold text-amber-300">{auditResult.telemetry.evidence_strength ?? "MEDIUM"}</div>
                   </div>
                   <div className="bg-slate-950/80 border border-slate-800 p-4 rounded-lg">
-                    <div className="flex items-center gap-2 text-[10px] uppercase text-slate-500 mb-2">
+                    <div className="flex items-center gap-2 text-[10px] uppercase text-slate-200 mb-2">
                       <CheckCircle2 className="w-3 h-3 text-cyan-400" /> Confidence
                     </div>
                     <div className="text-sm font-bold text-cyan-300">{((auditResult.telemetry.confidence ?? 0) * 100).toFixed(0)}%</div>
                   </div>
                   <div className="bg-slate-950/80 border border-slate-800 p-4 rounded-lg">
-                    <div className="flex items-center gap-2 text-[10px] uppercase text-slate-500 mb-2">
+                    <div className="flex items-center gap-2 text-[10px] uppercase text-slate-200 mb-2">
                       <Globe className="w-3 h-3 text-fuchsia-400" /> Cross-border Risk
                     </div>
                     <div className={`text-sm font-bold ${auditResult.telemetry.cross_border_risk ? "text-rose-400" : "text-emerald-400"}`}>
@@ -1246,9 +1269,9 @@ export default function AegisTelDashboard() {
                     borderColor: auditResult.risk_score === "CRITICAL" || auditResult.risk_score === "HIGH" || auditResult.status === "BLOCKED" ? "rgba(248,113,113,0.3)" : auditResult.status === "STEP_UP_REQUIRED" ? "rgba(245,158,11,0.28)" : "rgba(74,222,128,0.2)",
                   }}
                 >
-                  <div className="flex justify-between items-center border-b border-slate-900/70 pb-2">
+                  <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 border-b border-slate-900/70 pb-2">
                     <span className="text-cyan-400 font-bold uppercase">Auditor Verdict & Action</span>
-                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${auditResult.risk_score === "CRITICAL" || auditResult.risk_score === "HIGH" || auditResult.status === "BLOCKED" ? "bg-rose-950 text-rose-400 border border-rose-800" : auditResult.status === "STEP_UP_REQUIRED" ? "bg-amber-950 text-amber-300 border border-amber-800" : "bg-emerald-950 text-emerald-400 border border-emerald-800"}`}>
+                    <span className={`w-fit px-2 py-0.5 rounded text-[10px] font-bold ${auditResult.risk_score === "CRITICAL" || auditResult.risk_score === "HIGH" || auditResult.status === "BLOCKED" ? "bg-rose-950 text-rose-400 border border-rose-800" : auditResult.status === "STEP_UP_REQUIRED" ? "bg-amber-950 text-amber-300 border border-amber-800" : "bg-emerald-950 text-emerald-400 border border-emerald-800"}`}>
                       STATUS: {auditResult.status} | RISK: {auditResult.risk_score}
                     </span>
                   </div>
@@ -1264,11 +1287,11 @@ export default function AegisTelDashboard() {
                 </div>
 
                 <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4 shadow-[0_8px_24px_rgba(2,8,23,0.35)] space-y-3">
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                     <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-slate-400 flex items-center gap-2">
-                      <Terminal className="w-3.5 h-3.5 text-cyan-400" /> Evidence Explorer
+                      <Terminal className="w-3.5 h-3.5 text-cyan-400 shrink-0" /> Evidence Explorer
                     </div>
-                    <span className="text-[10px] text-slate-500">
+                    <span className="text-[10px] text-slate-200">
                       {(() => {
                         const tools = auditResult.telemetry.tool_results ?? [];
                         const sdk = tools.filter((t) => t.source === "Nokia NaC SDK").length;
@@ -1294,7 +1317,7 @@ export default function AegisTelDashboard() {
                             }`}>
                               {tool.source === "Nokia NaC SDK" ? "LIVE SDK" : tool.source === "CAMARA REST" ? "REST" : "SANDBOX"}
                             </span>
-                            {tool.duration_ms != null ? <span className="text-[9px] text-slate-500">{tool.duration_ms}ms</span> : null}
+                            {tool.duration_ms != null ? <span className="text-[9px] text-slate-200">{tool.duration_ms}ms</span> : null}
                           </span>
                         </summary>
                         <pre className="px-3 pb-3 text-[9px] text-slate-400 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap break-all border-t border-slate-900/70 pt-2">
@@ -1308,7 +1331,7 @@ export default function AegisTelDashboard() {
                     <details className="rounded-lg border border-violet-900 bg-violet-950/20">
                       <summary className="cursor-pointer px-3 py-2 text-[11px] font-bold text-violet-300 flex items-center justify-between">
                         <span className="flex items-center gap-2">LLM Raw Output (specialist + auditor reasoning)</span>
-                        <span className="text-[9px] text-slate-500">{auditResult.used_fallback ? "deterministic" : "model-authored"}</span>
+                        <span className="text-[9px] text-slate-200">{auditResult.used_fallback ? "deterministic" : "model-authored"}</span>
                       </summary>
                       <pre className="px-3 pb-3 text-[10px] text-slate-300 overflow-x-auto max-h-64 overflow-y-auto whitespace-pre-wrap break-all border-t border-violet-900/70 pt-2">
                         {auditResult.raw_output}
@@ -1331,7 +1354,7 @@ export default function AegisTelDashboard() {
                       <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
                         <div className="mb-3 flex items-center justify-between">
                           <div>
-                            <div className="text-[10px] uppercase tracking-[0.2em] text-slate-500">Risk Trend</div>
+                            <div className="text-[10px] uppercase tracking-[0.2em] text-slate-200">Risk Trend</div>
                             <div className="text-xs font-semibold text-slate-300">Historical risk movement for this subscriber</div>
                           </div>
                           <div className="rounded border border-slate-800 bg-slate-900 px-2 py-1 text-[10px] text-slate-400">{history?.count ?? 0} records</div>
@@ -1353,7 +1376,7 @@ export default function AegisTelDashboard() {
                             </ResponsiveContainer>
                           </div>
                         ) : (
-                          <div className="flex h-32 items-center justify-center rounded border border-dashed border-slate-800 bg-slate-900/60 text-center text-[11px] text-slate-500">
+                          <div className="flex h-32 items-center justify-center rounded border border-dashed border-slate-800 bg-slate-900/60 text-center text-[11px] text-slate-200">
                             No prior audits for this number
                           </div>
                         )}
@@ -1364,7 +1387,7 @@ export default function AegisTelDashboard() {
                           return (
                             <div key={`${incident.timestamp ?? index}`} className="rounded-lg border border-slate-800 bg-slate-950/70 p-3">
                               <div className="flex items-center justify-between gap-2">
-                                <div className="text-[10px] text-slate-500">{incident.timestamp ? new Date(incident.timestamp).toLocaleString() : "Unknown time"}</div>
+                                <div className="text-[10px] text-slate-200">{incident.timestamp ? new Date(incident.timestamp).toLocaleString() : "Unknown time"}</div>
                                 <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${severityClass}`}>{incident.status ?? "UNKNOWN"}</span>
                               </div>
                               <div className="mt-2 flex items-center justify-between text-[11px] text-slate-300">
@@ -1374,7 +1397,7 @@ export default function AegisTelDashboard() {
                             </div>
                           );
                         }) : (
-                          <div className="rounded-lg border border-slate-800 bg-slate-950/70 p-3 text-[11px] text-slate-500">
+                          <div className="rounded-lg border border-slate-800 bg-slate-950/70 p-3 text-[11px] text-slate-200">
                             Memory context is not yet available for this subscriber. The next audit run will populate it.
                           </div>
                         )}
@@ -1404,7 +1427,7 @@ export default function AegisTelDashboard() {
                 </div>
               </div>
             ) : (
-                <div className="py-10 text-center text-slate-500 text-xs italic">
+                <div className="py-10 text-center text-slate-200 text-xs italic">
                 Select an incident from Live Threat Feed or click &quot;Run Multi-API Audit&quot; to evaluate network signals.
               </div>
             )}
@@ -1431,7 +1454,7 @@ export default function AegisTelDashboard() {
                     </div>
                     <div className="bg-slate-950 border border-slate-800 rounded p-2.5 text-[11px] space-y-1">
                       <p className="text-slate-300">{event.message}</p>
-                      {event.detail && <p className="text-[10px] text-slate-500 font-mono pt-1 border-t border-slate-900">{event.detail}</p>}
+                      {event.detail && <p className="text-[10px] text-slate-200 font-mono pt-1 border-t border-slate-900">{event.detail}</p>}
                     </div>
                   </div>
                 ))}
@@ -1444,7 +1467,7 @@ export default function AegisTelDashboard() {
 
             {auditResult && auditResult.agent_trace.length > 0 && (
               <div className="border-t border-slate-800 pt-4">
-                <div className="text-[10px] uppercase text-slate-500 mb-2">Structured Evidence Trail</div>
+                <div className="text-[10px] uppercase text-slate-200 mb-2">Structured Evidence Trail</div>
                 <div className="space-y-2">
                   {auditResult.agent_trace.map((step, idx) => {
                     const isAuditor = step.agent.toLowerCase().includes("risk auditor");
@@ -1468,7 +1491,7 @@ export default function AegisTelDashboard() {
                                 {step.model}
                               </span>
                             ) : null}
-                            <span className="text-[10px] text-slate-500">{step.status}</span>
+                            <span className="text-[10px] text-slate-200">{step.status}</span>
                           </div>
                         </div>
                         <div className="mt-2 rounded border border-slate-800 bg-slate-950/70 p-3">
@@ -1476,7 +1499,7 @@ export default function AegisTelDashboard() {
                           <p className="mt-2 text-sm font-medium leading-relaxed text-slate-100">{step.thought}</p>
                         </div>
                         <p className="text-[10px] text-slate-400 mt-2 font-mono">{step.detail}</p>
-                        <p className="text-[10px] text-slate-500 mt-1 font-mono">{step.action}</p>
+                        <p className="text-[10px] text-slate-200 mt-1 font-mono">{step.action}</p>
                       </div>
                     );
                   })}
