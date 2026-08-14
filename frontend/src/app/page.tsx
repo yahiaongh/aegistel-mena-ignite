@@ -175,6 +175,7 @@ export default function AegisTelDashboard() {
   const [loading, setLoading] = useState(false);
   const [auditResult, setAuditResult] = useState<AuditResponse | null>(null);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [, setTtsStatus] = useState<"idle" | "speaking" | "fallback" | "unavailable">("idle");
   const [requestStatus, setRequestStatus] = useState<"idle" | "requesting" | "ready" | "error">("idle");
   const [liveEvents, setLiveEvents] = useState<LiveEvent[]>([]);
@@ -373,7 +374,7 @@ export default function AegisTelDashboard() {
     ]);
 
     const briefText = `Audit complete for ${data.msisdn}. Verdict: ${data.status}. Risk level: ${data.risk_score}. ${data.reasoning}`;
-    void playVoiceAlert(briefText);
+    if (voiceEnabled) void playVoiceAlert(briefText);
   };
 
   const handleFlowProgress = (payload: Record<string, unknown>) => {
@@ -609,7 +610,7 @@ export default function AegisTelDashboard() {
         },
       ]);
       const drillBrief = `Adversarial drill complete. Defense readiness: ${data.readiness_score} percent, grade ${data.grade}. ${data.outcomes["BLOCKED"] ?? 0} plays blocked, ${data.outcomes["MISSED"] ?? 0} missed. ${data.blind_spots.length > 0 ? "The red team found a blind spot: " + data.blind_spots[0].play_name : "No blind spots found."}`;
-      void playVoiceAlert(drillBrief);
+      if (voiceEnabled) void playVoiceAlert(drillBrief);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       setDrillError(message);
@@ -657,6 +658,31 @@ export default function AegisTelDashboard() {
               <span className="font-bold">AUDIO BRIEFING</span>
             </div>
           )}
+          <button
+            type="button"
+            onClick={() => {
+              setVoiceEnabled((prev) => {
+                const next = !prev;
+                if (!next) {
+                  if (activeAudioRef.current) {
+                    activeAudioRef.current.pause();
+                    activeAudioRef.current.currentTime = 0;
+                    activeAudioRef.current = null;
+                  }
+                  if (typeof window !== "undefined" && "speechSynthesis" in window) {
+                    window.speechSynthesis.cancel();
+                  }
+                  setIsSpeaking(false);
+                }
+                return next;
+              });
+            }}
+            aria-pressed={voiceEnabled}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-md border font-bold cursor-pointer select-none ${voiceEnabled ? "bg-cyan-950 border-cyan-800 text-cyan-300" : "bg-slate-900 border-slate-700 text-slate-500"}`}
+          >
+            <Volume2 className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">{voiceEnabled ? "VOICE ON" : "VOICE MUTED"}</span>
+          </button>
           <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-md">
             <RadioTower className="w-3.5 h-3.5 text-cyan-400" />
             <span className="hidden sm:inline text-slate-400">APIs Integrated:</span>

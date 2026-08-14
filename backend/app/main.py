@@ -134,8 +134,12 @@ async def audit_transaction(request: AuditRequest) -> AuditResponse:
 @router.get("/v1/history/{msisdn}")
 async def audit_history(msisdn: str, limit: int = 10):
     incidents = memory_engine.list_all_incidents(msisdn)
+    # local store is append-ordered (oldest first): serve the most RECENT
+    # `limit` records so the operator's risk trend reflects current history,
+    # not the transaction's first days.
+    recent = incidents[-limit:] if len(incidents) > limit else incidents
     items = []
-    for item in incidents[:limit]:
+    for item in recent:
         metadata = item.get("metadata") or {}
         if isinstance(metadata, dict):
             items.append(

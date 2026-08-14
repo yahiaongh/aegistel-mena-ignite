@@ -503,6 +503,7 @@ def _reconcile_crew_output(parsed_output: Dict[str, Any], deterministic_output: 
 
     final_assessment: Dict[str, Any] = {}
     mismatch_reasons: List[str] = []
+    narrative_overridden = False
 
     for key in deterministic_output["assessment"]:
         model_has_key = key in parsed_output
@@ -529,6 +530,7 @@ def _reconcile_crew_output(parsed_output: Dict[str, Any], deterministic_output: 
                 f"CrewAI attempted to downgrade deterministic status '{det_status}' to 'APPROVED'; preserving deterministic floor."
             )
             final_assessment["status"] = det_status
+            narrative_overridden = True
     # Risk score floor
     if det_risk and final_assessment.get("risk_score"):
         det_val = severity.get(det_risk, 2)
@@ -538,6 +540,7 @@ def _reconcile_crew_output(parsed_output: Dict[str, Any], deterministic_output: 
                 f"CrewAI attempted to lower risk_score from '{det_risk}' to '{final_assessment.get('risk_score')}'. Preserving deterministic risk '{det_risk}'."
             )
             final_assessment["risk_score"] = det_risk
+            narrative_overridden = True
 
     # Enforce the no-escalation ceiling on clean cases: when the deterministic
     # engine found no grounded risk signal (status APPROVED), the CrewAI output
@@ -573,8 +576,21 @@ def _reconcile_crew_output(parsed_output: Dict[str, Any], deterministic_output: 
     # When the escalation ceiling forced an APPROVED verdict on a clean case,
     # the deterministic reasoning was already substituted; skip prose
     # re-processing of the model's hallucinated text.
+    # When the downgrade floor forced a status and/or risk_score override, the
+    # model's free-text verdict is untrusted: it must not contradict the
+    # enforced structured verdict (e.g. prose claiming APPROVED while the floor
+    # kept STEP_UP_REQUIRED). Substitute the deterministic narrative, which is
+    # coherent with the grounded verdict by construction.
+    if narrative_overridden:
+        mismatch_reasons.append(
+            "CrewAI narrative text contradicted the enforced structured verdict; "
+            "substituting deterministic reasoning for coherence."
+        )
+        final_assessment["reasoning"] = deterministic_output["assessment"].get("reasoning")
+        final_assessment["recommended_action"] = deterministic_output["assessment"].get("recommended_action")
+
     reasoning_raw = parsed_output.get("reasoning") or deterministic_output["assessment"].get("reasoning")
-    if escalation_capped:
+    if escalation_capped or narrative_overridden:
         reasoning_raw = None
     if reasoning_raw:
         sanitized_reasoning, prose_issues = _check_prose_against_grounded_fields(reasoning_raw, final_assessment)
@@ -588,7 +604,7 @@ def _reconcile_crew_output(parsed_output: Dict[str, Any], deterministic_output: 
                 )
         final_assessment["reasoning"] = sanitized_reasoning
         mismatch_reasons.extend(prose_issues)
-    elif not escalation_capped:
+    elif not escalation_capped and not narrative_overridden:
         final_assessment["reasoning"] = reasoning_raw
 
     return final_assessment, mismatch_reasons
@@ -875,8 +891,11 @@ def run_specialist_crew(
         signal_count=len(risk_scan.get("trace", [])),
     )
 
-    if amount >= 25000 or request_qod or risk_signal:
-        _emit("qod:start", reason="amount_threshold" if amount >= 25000 else ("risk_signal" if risk_signal else "explicit_request"))
+    # QoD is a consequence of risk or of a high-value flow, never of the
+    # auto-provision flag alone: a clean low-amount transaction must not show a
+    # "QoD REQUESTED" step-up next to an APPROVED verdict.
+    if amount >= 25000 or risk_signal:
+        _emit("qod:start", reason="amount_threshold" if amount >= 25000 else "risk_signal")
         executed_tool_results.append(_run_tool_payload("create_qod_session", create_qod_session, msisdn=msisdn))
         _emit("qod:done", status="ok")
 

@@ -120,6 +120,15 @@ builder.add_edge("crew", END)
 aegis_graph = builder.compile()
 
 
+# Documented Nokia NaC sandbox simulator subscribers (tools.py / README). These
+# numbers are synthetic demo identities whose "incident history" is an artifact
+# of prior demo runs, not evidence. Their audits are still RECORDED so the
+# operator history panel shows the demo trail, but their history is excluded
+# from verdict WEIGHTING: a clean subscriber (+99999991001) must stay APPROVED
+# no matter how many times the demo has been run.
+SIMULATOR_MSISDNS = {"+99999991000", "+99999991001", "+99999991002", "+99999991003", "+9999123456"}
+
+
 async def execute_audit(request: AuditRequest, progress_callback: Any | None = None) -> AuditResponse:
     request_context = {
         "msisdn": request.msisdn,
@@ -132,16 +141,20 @@ async def execute_audit(request: AuditRequest, progress_callback: Any | None = N
         "force_deterministic": bool(request.metadata.get("_force_deterministic")),
     }
     print(f"[Graph Orchestrator] Request context: {request_context}")
-    memory_context = await memory_engine.retrieve_past_incidents_async(
-        request.msisdn,
-        f"fraud pattern {request.transaction_type} {request.current_location.latitude} {request.current_location.longitude}",
-    )
+    is_simulator = request.msisdn in SIMULATOR_MSISDNS
+    memory_context: List[Dict[str, Any]] = []
+    if not is_simulator:
+        memory_context = await memory_engine.retrieve_past_incidents_async(
+            request.msisdn,
+            f"fraud pattern {request.transaction_type} {request.current_location.latitude} {request.current_location.longitude}",
+        )
     if progress_callback is not None:
         try:
             progress_callback({"type": "memory:done", "incidents": len(memory_context)})
         except Exception:
             pass
-    print(f"[Memory Engine] Retrieved {len(memory_context)} past incidents for {request.msisdn}")
+    print(f"[Memory Engine] Retrieved {len(memory_context)} past incidents for {request.msisdn}"
+          + (" (simulator subscriber: memory excluded from verdict weighting)" if is_simulator else ""))
 
     initial_input: AuditState = {
         "messages": [
