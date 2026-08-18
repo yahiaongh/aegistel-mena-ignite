@@ -276,18 +276,22 @@ export default function AegisTelDashboard() {
 
   useEffect(() => {
     if (!msisdn) return;
+    let cancelled = false;
     const fetchHistory = async () => {
       try {
         const res = await fetch(`${apiBase}/api/v1/history/${encodeURIComponent(msisdn)}?limit=8`);
         if (!res.ok) throw new Error(`History fetch failed: ${res.status}`);
         const data: HistoryResponse = await res.json();
-        setHistory(data);
+        if (!cancelled) setHistory(data);
       } catch {
-        setHistory(null);
+        if (!cancelled) setHistory(null);
       }
     };
 
     void fetchHistory();
+    return () => {
+      cancelled = true;
+    };
   }, [apiBase, msisdn, auditResult]);
 
   const playVoiceAlert = async (text: string) => {

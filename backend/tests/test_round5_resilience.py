@@ -5,7 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.agents import crew_specialists
 from app.agents import memory_agent
-from app.core.config import settings
+from app.core.config import Settings, settings
 
 
 def test_prompt_descriptions_stay_compact_for_large_memory_context():
@@ -64,7 +64,7 @@ def test_memory_engine_prefers_groq_llm_and_falls_back_to_gemini(monkeypatch):
 
     assert engine.memory is not None
     assert captured["llm"]["provider"] == "groq"
-    assert captured["llm"]["config"]["model"] == "llama-3.1-8b-instant"
+    assert captured["llm"]["config"]["model"] == "openai/gpt-oss-20b"
     assert captured["embedder"]["provider"] == "gemini"
 
     monkeypatch.setattr(settings, "GROQ_API_KEY", "")
@@ -72,3 +72,19 @@ def test_memory_engine_prefers_groq_llm_and_falls_back_to_gemini(monkeypatch):
     engine = memory_agent.NetworkMemoryEngine()
     assert captured["llm"]["provider"] == "gemini"
     assert captured["llm"]["config"]["model"] == settings.GEMINI_MODEL
+
+
+def test_no_decommissioned_groq_models_anywhere():
+    """Groq decommissioned llama-3.3-70b-versatile and llama-3.1-8b-instant on
+    2026-08-16; every model reference must be on a supported replacement."""
+    for chain in crew_specialists.MODEL_CHAIN.values():
+        for model in chain:
+            assert "llama-3.3-70b" not in model
+            assert "llama-3.1-8b" not in model
+    assert "groq/openai/gpt-oss-120b" in crew_specialists.MODEL_CHAIN["specialist"]
+    assert "groq/openai/gpt-oss-20b" in crew_specialists.MODEL_CHAIN["specialist"]
+    assert "groq/openai/gpt-oss-20b" in crew_specialists.MODEL_CHAIN["auditor"]
+
+    defaults = Settings.model_fields
+    assert defaults["LLM_MODEL"].default == "groq/openai/gpt-oss-120b"
+    assert defaults["GROQ_MODEL"].default == "openai/gpt-oss-120b"

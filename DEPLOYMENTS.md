@@ -116,7 +116,7 @@ Use the `render.yaml` `sync: false` pattern or dashboard secrets for anything se
 | `NOKIA_CAMARA_BASE_URL` | optional | Override NaC base URL |
 | `QDRANT_URL` / `QDRANT_API_KEY` | optional | Persistent memory backend; falls back to local store |
 | `GEMINI_MODEL` | optional | Default `gemini-flash-latest` |
-| `GROQ_MODEL` | optional | Default `llama-3.3-70b-versatile` |
+| `GROQ_MODEL` | optional | Default `openai/gpt-oss-120b` (llama-3.3-70b/llama-3.1-8b decommissioned 2026-08-16) |
 | `FRONTEND_ORIGIN` | optional | CORS allowlist; defaults to `http://localhost:3000` — **set to your frontend URL in production** |
 | `PORT` | optional | Default 8000 (backend) / 7860 (single image) |
 | `APP_ENV` | optional | `development` / `production` |
