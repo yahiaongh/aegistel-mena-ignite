@@ -16,8 +16,8 @@ class Settings(BaseSettings):
     NOKIA_CAMARA_BASE_URL: str = "https://network-as-code.p-eu.rapidapi.com/passthrough/camara/v1"
 
     GROQ_API_KEY: str = ""
-    LLM_MODEL: str = "groq/llama-3.3-70b-versatile"
-    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    LLM_MODEL: str = "groq/openai/gpt-oss-120b"
+    GROQ_MODEL: str = "openai/gpt-oss-120b"
     GOOGLE_API_KEY: str = ""
     GEMINI_MODEL: str = "gemini-flash-latest"
     OPENROUTER_API_KEY: str = ""

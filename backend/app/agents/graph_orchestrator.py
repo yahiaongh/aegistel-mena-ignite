@@ -150,7 +150,11 @@ async def execute_audit(request: AuditRequest, progress_callback: Any | None = N
         )
     if progress_callback is not None:
         try:
-            progress_callback({"type": "memory:done", "incidents": len(memory_context)})
+            # Report the full recorded trail (simulator audits are recorded but
+            # excluded from verdict weighting, so len(memory_context) would lie
+            # to the operator as 0). Weighting semantics are untouched.
+            prior_count = len(memory_engine.list_all_incidents(request.msisdn))
+            progress_callback({"type": "memory:done", "incidents": prior_count})
         except Exception:
             pass
     print(f"[Memory Engine] Retrieved {len(memory_context)} past incidents for {request.msisdn}"

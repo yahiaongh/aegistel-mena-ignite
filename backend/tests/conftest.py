@@ -1,3 +1,5 @@
+import os
+import tempfile
 import types
 from pathlib import Path
 
@@ -6,6 +8,13 @@ from dotenv import load_dotenv
 
 ROOT_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 load_dotenv(dotenv_path=ROOT_ENV_FILE, override=False)
+
+# CRITICAL: the test suite must never touch the live demo memory file
+# (backend/data/local_memory.jsonl). Earlier, tests called clear_all_memory()
+# against the real store and wiped the operator's accumulated audit history.
+# Route every test-run memory write to a scratch file under the OS temp dir.
+_TEST_MEMORY_PATH = Path(tempfile.mkdtemp(prefix="aegistel-test-memory-")) / "local_memory.jsonl"
+os.environ["AEGISTEL_MEMORY_PATH"] = str(_TEST_MEMORY_PATH)
 
 
 @pytest.fixture(autouse=True)

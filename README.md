@@ -265,7 +265,7 @@ The eval runs one scenario at a time with memory cleared for isolation, so free-
 
 AegisTel uses a deliberate multi-model fallback chain so the demo remains resilient when one provider rate limits or becomes unavailable:
 
-- Specialist reasoning first tries Groq's primary 70B model.
+- Specialist reasoning first tries Groq's primary GPT-OSS 120B model (the recommended replacement for the decommissioned `llama-3.3-70b-versatile`), with Qwen3.6-27B and GPT-OSS 20B as the Groq tiers beneath it.
 - If that tier hits a quota or availability issue, the workflow falls back to the next available provider in the chain, including Gemini and OpenRouter.
 - The risk auditor uses the same principle on its own path, with Gemini and other providers filling in when needed.
 - Memory operations use Gemini-backed memory extraction so they do not compete with the specialist reasoning budget; reads use a local exact-match fallback for stability on demo hardware.

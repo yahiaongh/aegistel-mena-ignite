@@ -15,7 +15,12 @@ except Exception:
     Memory = None
 
 logger = logging.getLogger(__name__)
-LOCAL_STORE_PATH = Path(__file__).resolve().parents[2] / "data" / "local_memory.jsonl"
+LOCAL_STORE_PATH = Path(
+    os.environ.get(
+        "AEGISTEL_MEMORY_PATH",
+        str(Path(__file__).resolve().parents[2] / "data" / "local_memory.jsonl"),
+    )
+)
 
 
 class NetworkMemoryEngine:
@@ -28,15 +33,15 @@ class NetworkMemoryEngine:
             # mem0's LLM layer performs extraction/synthesis (one Gemini request
             # per memory op). Gemini's free tier is per-model and tiny (~20 RPD
             # on flash), and the crew needs that quota — so route mem0's LLM to
-            # Groq (llama-3.1-8b-instant has a 500k TPD free bucket), keeping
-            # Gemini only as fallback. Embeddings stay on Gemini (separate,
-            # generous quota).
+            # Groq (openai/gpt-oss-20b, the volume tier that replaced the
+            # decommissioned llama-3.1-8b-instant), keeping Gemini only as
+            # fallback. Embeddings stay on Gemini (separate, generous quota).
             if settings.GROQ_API_KEY:
                 llm_config = {
                     "provider": "groq",
                     "config": {
                         "api_key": settings.GROQ_API_KEY,
-                        "model": "llama-3.1-8b-instant",
+                        "model": "openai/gpt-oss-20b",
                     },
                 }
             else:

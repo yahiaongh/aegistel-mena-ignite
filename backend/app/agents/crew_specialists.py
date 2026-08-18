@@ -35,25 +35,29 @@ except Exception:
 # so a request never burns a ~26s retry or a ~6.6s native-provider import on a
 # model that is known to be unavailable.
 #
-# Free-tier headroom (2026, same providers as the guide):
-#   groq/llama-3.3-70b-versatile       100k tokens/day (quality primary)
-#   groq/llama-3.1-8b-instant          500k tokens/day (volume tier)
-#   gemini/gemini-3.5-flash-lite       ~1,000 req/day (per-model bucket,
-#                                      independent of the flash model's ~20/day)
-#   gemini/<configured flash>          quality tier, tightest daily cap
+# Groq deprecated llama-3.3-70b-versatile and llama-3.1-8b-instant on
+# 2026-08-16; the chain now uses the recommended GPT-OSS family plus
+# Qwen3.6-27B (see GroqCloud model list):
+#   groq/openai/gpt-oss-120b        ~$0.15/1M in, 250K TPM (quality primary)
+#   groq/qwen/qwen3.6-27b           ~$0.60/1M in (second Groq tier)
+#   groq/openai/gpt-oss-20b         ~$0.075/1M in, 1000 tps (volume tier)
+#   gemini/gemini-3.5-flash-lite    ~1,000 req/day (per-model bucket,
+#                                   independent of the flash model's ~20/day)
+#   gemini/<configured flash>       quality tier, tightest daily cap
 # Cooldowns honor each provider's own retry hint, and daily-quota errors put
 # the model out of play until the nightly reset instead of retrying every 60s.
 _GEMINI_HIGH_HEADROOM_MODEL = "gemini-3.5-flash-lite"
 MODEL_CHAIN = {
     "specialist": [
-        "groq/llama-3.3-70b-versatile",
-        "groq/llama-3.1-8b-instant",
+        "groq/openai/gpt-oss-120b",
+        "groq/qwen/qwen3.6-27b",
+        "groq/openai/gpt-oss-20b",
         "openrouter/openai/gpt-4o-mini",
         f"gemini/{_GEMINI_HIGH_HEADROOM_MODEL}",
         f"gemini/{settings.GEMINI_MODEL}",
     ],
     "auditor": [
-        "groq/llama-3.1-8b-instant",
+        "groq/openai/gpt-oss-20b",
         "openrouter/openai/gpt-4o-mini",
         f"gemini/{_GEMINI_HIGH_HEADROOM_MODEL}",
         f"gemini/{settings.GEMINI_MODEL}",
