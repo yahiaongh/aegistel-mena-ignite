@@ -193,6 +193,11 @@ docker-compose up --build -d
 
 > For a single consolidated reference covering local, Docker, Dockerfile.hf
 > (HF Spaces / Render) and how to run the test suite, see **[RUN_AND_TEST.md](RUN_AND_TEST.md)**.
+>
+> **Heads-up for reviewers/judges:** the app needs provider API keys that you
+> create yourself (free tiers are fine) — they are never committed, so each
+> environment must create a root `.env` from `backend/.env.example`. See
+> "Before you run — create your own API keys" in RUN_AND_TEST.md.
 
 ---
 

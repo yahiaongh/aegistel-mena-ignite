@@ -19,9 +19,13 @@ Backend (see `backend/`):
 cd backend
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp ../.env ./.env            # or export the variables from the repo root .env
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
+
+> The backend loads keys from a `.env` file at the **repo root** (see
+> `config.py`). Create it from the template — `cp backend/.env.example .env` —
+> and fill in your real API keys. See `RUN_AND_TEST.md` → "Before you run —
+> create your own API keys" for the mandatory/optional key table.
 
 Frontend (see `frontend/`):
 
@@ -107,14 +111,14 @@ Use the `render.yaml` `sync: false` pattern or dashboard secrets for anything se
 | Variable | Required | Notes |
 |---|---|---|
 | `GROQ_API_KEY` | optional | Primary specialist/auditor LLM provider |
-| `GOOGLE_API_KEY` | optional | Gemini; free-tier quota is rate-limited, hence lower chain priority |
+| `GOOGLE_API_KEY` | required for memory | Gemini; also drives QDRANT memory embeddings + extraction — needed for memory context in the verdict |
 | `OPENROUTER_API_KEY` | optional | Fast reliable fallback, preferred before Gemini in `MODEL_CHAIN` |
 | `CEREBRAS_API_KEY` | optional | Additional provider |
 | `OPENAI_API_KEY` | optional | Additional provider |
 | `DEEPGRAM_API_KEY` | optional | TTS; falls back to `edge_tts` when absent |
-| `NOKIA_NAC_API_KEY` | required for live CAMARA calls | Network-as-Code (RapidAPI) key |
+| `NOKIA_NAC_API_KEY` | optional (sandbox falls back) | Network-as-Code (RapidAPI) key for live CAMARA calls |
 | `NOKIA_CAMARA_BASE_URL` | optional | Override NaC base URL |
-| `QDRANT_URL` / `QDRANT_API_KEY` | optional | Persistent memory backend; falls back to local store |
+| `QDRANT_URL` / `QDRANT_API_KEY` | required for memory | Persistent memory backend; feeds incident context into the verdict |
 | `GEMINI_MODEL` | optional | Default `gemini-flash-latest` |
 | `GROQ_MODEL` | optional | Default `openai/gpt-oss-120b` (llama-3.3-70b/llama-3.1-8b decommissioned 2026-08-16) |
 | `FRONTEND_ORIGIN` | optional | CORS allowlist; defaults to `http://localhost:3000` — **set to your frontend URL in production** |
