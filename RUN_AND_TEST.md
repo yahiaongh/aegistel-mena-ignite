@@ -24,14 +24,53 @@ backend. The target is a **build-time** value:
 
 ---
 
+## Before you run — create your own API keys (required)
+
+The app needs **provider API keys that you must create yourself** from each
+platform. They are never bundled or committed (`.env` is gitignored), so every
+judge/reviewer creates their own before running. The backend loads keys from a
+`.env` file at the **repo root**.
+
+**1. Create keys** at these platforms (free tiers are enough):
+
+| File key | Where to create it | Needed for | Mandatory? |
+|---|---|---|---|
+| `GROQ_API_KEY` | https://console.groq.com — API Keys | Primary LLM (specialist + auditor + memory) | **Yes** (one of GROQ/OpenRouter/Gemini) |
+| `GOOGLE_API_KEY` | https://aistudio.google.com/apikey (create a key with the Generative Language API) | QDRANT memory embeddings + memory extraction | **Yes** (memory feeds the verdict) |
+| `QDRANT_API_KEY` + `QDRANT_URL` | https://qdrant.tech — create/host a cluster, copy its API key & URL | Vector store for memory context | **Yes** (memory is mandatory) |
+| `NOKIA_NAC_API_KEY` | Nokia Network-as-Code on RapidAPI (host `network-as-code.nokia.rapidapi.com`) | The 7 CAMARA telecom checks | No — falls back to sandbox signals |
+| `OPENROUTER_API_KEY` | https://openrouter.ai/keys | LLM fallback tier | Optional |
+| `OPENAI_API_KEY` / `CEREBRAS_API_KEY` | platform providers | LLM fallback tiers | Optional |
+| `DEEPGRAM_API_KEY` | https://deepgram.com | Neural TTS | Optional — empty falls back to `edge_tts` |
+
+**2. Create the root `.env` from the template, then fill it in:**
+
+```bash
+# from the repo root:
+cp backend/.env.example .env
+# open .env and paste your real keys into the variables above
+```
+
+> The backend resolves `.env` from the **repo root** (see `config.py`), so the
+> file must be at the root, *not* inside `backend/`. `.gitignore` already
+> excludes it, so it will never be committed.
+
+**3. Minimum for a full, live verdict:** `GROQ_API_KEY` (or another LLM key),
+`GOOGLE_API_KEY`, `QDRANT_API_KEY` and `QDRANT_URL`, else memory context is
+skipped and the app shows `used_fallback`. `NOKIA_NAC_API_KEY` is optional —
+without it the CAMARA checks use the built-in sandbox signals.
+
+You only need to do this **once per machine**. The steps below then run the app.
+
+---
+
 ## 1. Local development (bare metal)
 
 ```bash
-# backend
+# backend (from the repo root, first create root .env per the section above)
 cd backend
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env 2>/dev/null || true   # or export the vars from your root .env
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 # frontend (separate terminal)
