@@ -1,5 +1,4 @@
 # backend/app/agents/crew_specialists.py
-import asyncio
 import json
 import logging
 import re
@@ -831,8 +830,6 @@ def run_specialist_crew(
         geofence_radius_meters = 5000
     enforce_roaming_policy = bool(metadata.get("enforce_roaming_policy"))
 
-    from concurrent.futures import ThreadPoolExecutor
-
     # The telemetry tools are independent SDK calls. Running them concurrently
     # removes the serial latency without changing which tools run. QoD is
     # provisioned separately below, after the deterministic risk signal has
@@ -978,22 +975,6 @@ def run_specialist_crew(
             "used_fallback": True,
         }
 
-    if not fallback_model_pairs:
-        logger.warning("No configured provider-backed models available; using deterministic specialist fallback")
-        _emit("llm:fallback", reason="no_model_pairs")
-        _emit(
-            "crew:done",
-            status=deterministic_output["assessment"].get("status"),
-            risk_score=deterministic_output["assessment"].get("risk_score"),
-            used_fallback=True,
-        )
-        return {
-            "assessment": deterministic_output["assessment"],
-            "tool_results": executed_tool_results,
-            "trace": fallback_trace,
-            "raw_output": "Deterministic fallback used because no configured provider-backed models were available.",
-            "used_fallback": True,
-        }
     last_error: Exception | None = None
     deadline = time.monotonic() + llm_time_budget_s
 
@@ -1083,11 +1064,24 @@ def run_specialist_crew(
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise _LLMBudgetExceededError(f"LLM phase budget ({llm_time_budget_s}s) exhausted")
-            with ThreadPoolExecutor(max_workers=1) as pool:
-                try:
-                    crew_output = pool.submit(crew.kickoff).result(timeout=remaining)
-                except TimeoutError as exc:
-                    raise _LLMBudgetExceededError(f"LLM phase budget ({llm_time_budget_s}s) exhausted after {exc}") from exc
+            # Run the crew in a worker so the budget can be enforced. On the
+            # success path this behaves exactly like the old `with` block. On a
+            # real timeout, shutdown(wait=False) lets us respond immediately
+            # instead of the `with`-block shutdown(wait=True) waiting until the
+            # hung LLM call happens to finish — which was silently defeating the
+            # whole budget mechanism.
+            pool = ThreadPoolExecutor(max_workers=1)
+            try:
+                crew_future = pool.submit(crew.kickoff)
+                crew_output = crew_future.result(timeout=remaining)
+            except TimeoutError as exc:
+                pool.shutdown(wait=False, cancel_futures=True)
+                raise _LLMBudgetExceededError(f"LLM phase budget ({llm_time_budget_s}s) exhausted after {exc}") from exc
+            except BaseException:
+                pool.shutdown(wait=False, cancel_futures=True)
+                raise
+            else:
+                pool.shutdown(wait=True)
             parsed_output = _parse_structured_output(str(crew_output))
             failure_reason = None
 

@@ -27,7 +27,6 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt
 COPY backend /app/backend
 COPY --from=frontend-build /app/frontend/.next/standalone /app/frontend
 COPY --from=frontend-build /app/frontend/.next/static /app/frontend/.next/static
-COPY --from=frontend-build /app/frontend/public /app/frontend/public
 COPY frontend/next.config.ts /app/frontend/next.config.ts
 COPY start.sh /app/start.sh
 RUN chmod +x /app/start.sh

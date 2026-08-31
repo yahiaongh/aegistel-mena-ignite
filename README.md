@@ -191,16 +191,19 @@ docker-compose up --build -d
 - Frontend dashboard: http://localhost:3000
 - FastAPI docs: http://localhost:8000/docs
 
+> For a single consolidated reference covering local, Docker, Dockerfile.hf
+> (HF Spaces / Render) and how to run the test suite, see **[RUN_AND_TEST.md](RUN_AND_TEST.md)**.
+
 ---
 
 ## Verification status
 
 The current implementation has been validated with fresh checks:
 
-- Backend regression tests: 61 passed (`cd backend && .venv/bin/python -m pytest tests/ -q`)
-- Backend drill tests: 9 passed (`cd backend && .venv/bin/python -m pytest tests/test_adversarial_drill.py -q`)
+- Backend test suite: **87 passed, 0 failures** (`cd backend && ../venv/bin/python -m pytest tests/ -q`). The suite is fully offline (NaC SDK and LLM calls are stubbed, memory is redirected to a scratch file) and runs with `backend/pytest.ini` filters that silence unrelated third-party deprecation noise (CrewAI/Starlette/torch) — a clean run reports zero repo warnings.
 - Frontend typecheck and lint: clean (`cd frontend && npx tsc --noEmit && npm run lint`)
 - API smoke: `GET /api/health` returns `"active_tool_count": 7`; `POST /api/v1/drill/run` returns a full drill report.
+- Judge-path simulation: `docker compose up --build -d` boots both services; an audit via the frontend proxy returns HTTP 200 with all 7 CAMARA tools and a grounded verdict. `Dockerfile.hf`, local, and Render paths all reach the backend through the same build-time `AEGISTEL_BACKEND_URL` wiring (see `RUN_AND_TEST.md`).
 
 ### How to test the Adversarial Drill
 
