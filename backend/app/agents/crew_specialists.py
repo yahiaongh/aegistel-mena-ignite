@@ -806,6 +806,12 @@ def _log_prompt_size(description: str, label: str) -> None:
         logger.warning("Large %s prompt detected: approx %s tokens", label, estimated_tokens)
 
 
+# Per-pair cap on a single crew LLM attempt. Keeps a hang/reachability problem on
+# one provider from eating the whole multi-pair budget: fail over to the next
+# provider after ~25s instead of blocking the request for minutes.
+_LLM_ATTEMPT_BUDGET_S: float = 25.0
+
+
 def run_specialist_crew(
     request_context: Dict[str, Any],
     memory_context: List[Dict[str, Any]],
@@ -1091,9 +1097,14 @@ def run_specialist_crew(
             )
 
             crew = Crew(agents=[security_agent, network_agent, auditor_agent], tasks=[security_task, network_task, risk_task], verbose=False)
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            remaining_total = deadline - time.monotonic()
+            if remaining_total <= 0:
                 raise _LLMBudgetExceededError(f"LLM phase budget ({llm_time_budget_s}s) exhausted")
+            # Per-attempt cap: a provider whose egress hangs for the whole budget
+            # would otherwise starve every other provider (each pair retry only
+            # starts after the previous one exhausted the total deadline). Cap each
+            # attempt so a dead/hung provider fails over to the next pair quickly.
+            remaining = min(remaining_total, _LLM_ATTEMPT_BUDGET_S)
             # Run the crew in a worker so the budget can be enforced. On the
             # success path this behaves exactly like the old `with` block. On a
             # real timeout, shutdown(wait=False) lets us respond immediately
