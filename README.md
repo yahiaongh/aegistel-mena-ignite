@@ -11,101 +11,294 @@ dockerfile: Dockerfile.hf
 
 # AegisTel — Autonomous Telco-Aware AI Guard Engine
 
-> GSMA MENA Ignite Hackathon 2026 Submission  
-> Theme 7 — Open Innovation
+> GSMA MENA Ignite Hackathon 2026 Submission · Theme 7 — Open Innovation
 
 ## Executive summary
 
-AegisTel is a telecom-aware fraud assessment demo that turns transaction context into an explainable security decision. The current backend combines a FastAPI API, a specialist workflow for SIM swap, location, roaming, reachability, and QoD checks, and a polished Next.js operator dashboard.
+AegisTel turns a single transaction context (MSISDN, amount, location, QoD
+preference) into an **explainable, autonomous fraud decision**. The backend is a
+FastAPI service driven by a LangGraph orchestrator: it runs **seven live CAMARA
+telecom checks** through the Nokia Network-as-Code SDK, fuses the evidence with a
+deterministic rule engine, lets a **CrewAI specialist crew** refine the verdict
+(made stricter only when warranted), and returns a grounded decision with a full
+evidence trail. A polished Next.js dashboard renders the live pipeline and the
+operator-facing verdict.
 
-The implementation is designed for hackathon-grade demos and submission readiness. It focuses on three principles that matter for the event:
+The design rests on three principles:
 
-- Explainability: every decision has reasoning and an evidence trail.
-- Autonomy: the system executes telecom checks end to end for the supplied MSISDN and transaction context.
-- Resilience: a deterministic fallback path keeps the demo stable even when live LLM or CrewAI execution is unavailable.
-
----
-
-## What changed in this iteration
-
-The current version integrates the full live demo flow across backend and frontend:
-
-- A production-style LangGraph orchestrator now drives the evaluation workflow.
-- CrewAI is the primary reasoning path for the specialist agents, with deterministic synthesis remaining as the safety net when model calls fail or quotas are exhausted.
-- The specialist crew now uses a layered model chain that tries Groq first, then Gemini, then OpenRouter as additional fallbacks so one provider outage does not collapse the whole workflow.
-- The auditor uses its own fallback chain so the final verdict can still be produced if one provider becomes unavailable.
-- The FastAPI backend exposes a browser-friendly audit route and a live evidence trail, including structured error details for failed requests.
-- The Next.js frontend renders the verdict, telemetry, and agent trace in a polished Nokia NaC-style operator experience.
-- The crew now executes **seven CAMARA tools** — SIM Swap, Location Verification, Device Roaming Status, Device Reachability, Quality on Demand, **Number Verification**, and **Congestion Insights** — each with a live Nokia NaC SDK call first, a CAMARA REST passthrough second, and a documented sandbox fallback third.
-- Memory-based incident recall now uses Gemini-backed memory extraction so it does not compete with the specialist reasoning budget.
-- Number Verification and Congestion Insights are weighted into the deterministic verdict: a FAILED/UNKNOWN number binding is an account-takeover signal on the same footing as SIM swap, while sustained High cell congestion corroborates crowd-gathering contexts.
+- **Explainability** — every decision carries reasoning and an inspectable tool-by-tool evidence trail.
+- **Autonomy** — telecom checks execute end to end with no human in the loop.
+- **Resilience** — a deterministic rule engine and a multi-provider model chain keep the demo stable even when live LLM/quota paths fail.
 
 ---
 
 ## Why it matters
 
-Traditional fraud systems rely on static application context. AegisTel brings telecom intelligence into the decision loop by using CAMARA-style signals such as:
+Traditional fraud systems evaluate a transaction against static application
+context. AegisTel injects **operator-grade telecom intelligence** into the
+decision loop — the same signals a telco uses to protect its own subscribers —
+so the verdict reflects where the device really is, whether the SIM was recently
+replaced, whether the number binding still holds, and how congested the serving
+cell is.
 
-- SIM swap detection
-- Number Verification (silent ownership check)
-- Location verification
-- Roaming status
-- Device reachability
-- Congestion Insights (smart-city / crowd context)
-- QoD session handling
+| Signal | What it detects |
+|---|---|
+| SIM swap | Account-takeover via recent SIM replacement |
+| Number Verification | Silent ownership / device-binding check (account takeover) |
+| Location verification | Device-at-claimed-location proof |
+| Roaming status | Cross-border / roaming context |
+| Device reachability | Is the device ON / reachable? |
+| Congestion Insights | Crowd-gathering / mass-event context |
+| Quality on Demand (QoD) | Guaranteed-QoS escalation on confirmed risk |
 
-This allows the platform to make fast, evidence-backed decisions for high-value or high-risk flows such as fintech transfers, emergency dispatch, and smart city safety events.
+These apply directly to **fintech transfers, emergency dispatch, and smart-city
+/ pilgrimage safety** — any flow where a fast, evidence-backed decision matters.
 
 ---
 
-## Solution architecture
+## System architecture
 
 ```mermaid
-graph TD
-    Client["Enterprise App / Demo UI"] --> API["FastAPI Gateway"]
-    API --> Orchestrator["LangGraph Orchestrator"]
-    Orchestrator --> Security["Security Specialist"]
-    Orchestrator --> Network["Network Intelligence Specialist"]
-    Orchestrator --> Auditor["Risk Auditor"]
+flowchart LR
+    subgraph CLIENT["Client"]
+        B["Operator Dashboard<br/>(Next.js :3000)"]
+    end
 
-    Security --> Telecom["Nokia NaC / CAMARA-style Telemetry"]
-    Network --> Telecom
-    Auditor --> Memory["Incident Memory"]
+    subgraph API["Backend — FastAPI :8000"]
+        G["API gateway<br/>/api/v1/audit + /api/v1/audit/stream"]
+        O["LangGraph orchestrator<br/>execute_audit"]
+    end
 
-    Orchestrator --> UI["Next.js Operator Dashboard"]
+    subgraph INTEL["Intelligence layers"]
+        CREW["CrewAI specialist crew<br/>+ model fallback chain"]
+        DET["Deterministic rule engine"]
+        MEM[("Incident memory<br/>QDRANT + local store")]
+    end
+
+    subgraph TELCO["Telecom data source"]
+        N["Nokia Network-as-Code<br/>CAMARA SDK"]
+    end
+
+    B -->|"HTTPS  /api/*  (proxy) + SSE"| G
+    G --> O
+    O --> DET
+    O --> CREW
+    DET -->|"7 CAMARA checks"| N
+    CREW -->|"7 CAMARA checks"| N
+    O <-->|"retrieve / record incidents"| MEM
+    O -->|"verdict + trace + telemetry"| G
+    G -->|"structured AuditResponse"| B
 ```
 
-### Core components
+**Key call-outs:**
 
-- Backend: Python, FastAPI, LangGraph, Pydantic
-- Agent reasoning: CrewAI as the primary reasoning path, with deterministic synthesis as the fallback when model calls fail or quotas are exhausted
-- Frontend: Next.js, TypeScript, Tailwind-inspired UI, live evidence presentation
-- Memory: incident recall for fraud pattern correlation. Writes use a small LLM extraction step (Gemini) to index memory records, but reads currently use a local exact-match lookup fallback for stability; full semantic recall/search was deliberately deferred to avoid runtime hangs on demo hardware. Every audit is recorded (powering the operator's Audit History / risk-trend panel, which serves the most recent records first), but the documented sandbox simulator subscribers (`+99999991000` … `+99999991003`, `+9999123456`) are excluded from memory-based verdict *weighting*: they are synthetic demo identities whose "history" is a demo artifact, so the clean control case (`+99999991001`) stays honestly APPROVED across repeated demo sessions.
+- The **deterministic rule engine is the authoritative contract** — it defines
+  the grounded verdict and cannot be silently downgraded by the LLM.
+- The **CrewAI crew may only intensify confirmed risk**, never invent risk on a
+  clean case (coherence is enforced in `crew_specialists._reconcile_crew_output`).
+- A layered **model fallback chain** (Groq → OpenRouter → Gemini) plus a wall-clock
+  budget means one provider outage never collapses the audit.
+
+---
+
+## 1. Backend — audit pipeline (data flow)
+
+```mermaid
+flowchart LR
+    subgraph INPUT["Request"]
+        REQ["POST /api/v1/audit<br/>or /audit/stream (SSE)"]
+    end
+
+    subgraph PREP["Preparation"]
+        MEM["Retrieve incident memory<br/>(skipped for simulator numbers)"]
+        CTX["Build request context<br/>MSISDN · amount · location · type"]
+    end
+
+    subgraph EVID["Evidence (parallel)"]
+        subgraph TOOLS["7 CAMARA tools — SDK → REST → sandbox"]
+            T1["SIM swap"]
+            T2["Location"]
+            T3["Roaming"]
+            T4["Reachability"]
+            T5["Number verify"]
+            T6["Congestion"]
+            T7["QoD"]
+        end
+        DET["Deterministic synthesis<br/>grounded verdict + recommended action"]
+    end
+
+    subgraph LLM["LLM refinement (budget-bounded)"]
+        CREW["CrewAI: security → network → auditor"]
+        REC["Reconcile: floor / ceiling / prose guard"]
+    end
+
+    subgraph OUT["Response"]
+        FINAL["FinalAssessment"]
+        STORE["Record incident to memory"]
+    end
+
+    REQ --> MEM --> CTX
+    CTX --> TOOLS
+    TOOLS --> DET
+    DET --> CREW
+    CREW --> REC
+    REC --> FINAL
+    FINAL --> STORE
+    FINAL --> RESP["AuditResponse<br/>status · risk · reasoning · trace"]
+```
+
+The seven tools run as `asyncio` calls that execute **concurrently** and rejoin
+before the deterministic synthesis — shown here as a single edge into the tool
+box to keep the diagram from tangling while staying truthful to the concurrency.
+
+---
+
+## 2. Telecom tool layer (fallback strategy)
+
+```mermaid
+flowchart TD
+    subgraph CALLER["Called by deterministic + crew paths"]
+        C["A CAMARA check"]
+    end
+
+    subgraph FALLBACK["Attempt order"]
+        L1["1 · Live Nokia NaC SDK"] -->|"fails"| L2["2 · CAMARA REST passthrough"] -->|"fails"| L3["3 · Documented sandbox simulator"]
+    end
+
+    subgraph RES["Source tagging"]
+        R["Result + source label<br/>(SDK / REST / sandbox)"]
+    end
+
+    C --> L1
+    L3 --> R
+    L2 --> R
+    L1 --> R
+    R --> AGG["Evidence merge for verdict"]
+```
+
+Each result carries its **source tag**, which drives the per-request **confidence
+score** (`_compute_confidence`): more live-SDK results → higher confidence. The
+sandbox simulator numbers (`+99999991000` … `+99999991003`, `+9999123456`) let the
+demo run fully offline while still exercising every tool.
+
+---
+
+## 3. CrewAI specialist + coherence guard
+
+```mermaid
+flowchart LR
+    subgraph CHAIN["Specialist crew (task-chained)"]
+        S["Security Specialist"] --> N1["Network Intelligence"] --> A["Risk Auditor"]
+    end
+
+    subgraph MODELS["Model fallback chain"]
+        M1["Groq (primary)"] --> M2["OpenRouter"] --> M3["Gemini"]
+    end
+
+    subgraph GUARD["Coherence guards"]
+        G_FLOOR["Cannot downgrade grounded risk"]
+        G_CEIL["Cannot invent risk on clean case"]
+        G_PROSE["Prose vs structured-field check"]
+    end
+
+    A --> MODELS
+    S --> MODELS
+    A --> GUARD
+    GUARD --> ASSESS["FinalAssessment"]
+```
+
+- **Floor** — the LLM may turn `STEP_UP_REQUIRED` into `REJECTED`/`BLOCKED`, but it
+  may never relax a grounded `STEP_UP_REQUIRED` to `APPROVED`.
+- **Ceiling** — if the deterministic engine said `APPROVED` with no risk signal,
+  the verdict stays `APPROVED` regardless of model output.
+- Each LLM stage runs under a **wall-clock budget**; on timeout the chain degrades
+  to the deterministic fallback instead of hanging the request.
+
+---
+
+## 4. Incident memory (data flow)
+
+```mermaid
+flowchart TD
+    subgraph WRITE["Write path"]
+        AUDIT["Audit completes"] --> EXTRACT["LLM extracts structured incident<br/>(Gemini)"] --> IDX["Index into QDRANT + local store"]
+    end
+
+    subgraph READ["Read path"]
+        NEW["New transaction"] --> RETR["Semantic retrieve <br/>fraud-pattern query"] --> CTXT["memory_context into verdict"]
+    end
+
+    IDX --> STORE[("Incident store")]
+    STORE --> RETR
+```
+
+- Writes/reads use Gemini-backed extraction so they do **not** compete with the
+  specialist reasoning budget; reads fall back to local exact-match for stability.
+- Every audit is **recorded** (powering the operator's Audit History / risk-trend
+  panel), but **simulator subscribers are excluded from verdict weighting** so the
+  clean control case (`+99999991001`) stays honestly `APPROVED` across repeated
+  demo sessions.
+
+---
+
+## 5. Adversarial Drill (red team)
+
+```mermaid
+flowchart LR
+    subgraph ATK["Attacker side"]
+        LINEUP["Draw 6-play lineup<br/>from 14 archetypes"]
+        GENIE["Fraud Genie curates names/intents<br/>(else seeded sampler)"]
+    end
+
+    subgraph DEF["Defense side"]
+        RUN["Replay each play through<br/>the live crew"]
+        GRADE["Grade defense: 0–100 + A–F<br/>outcome chips + blind spots"]
+    end
+
+    LINEUP --> GENIE --> RUN --> GRADE
+    GRADE --> REPORT["Drill report<br/>readiness · plays[] · blind_spots[]"]
+```
+
+The drill flips the same multi-agent engine into the attacker: every run
+rotates **structural blind spots** (sub-threshold first strikes, mid-size
+QoD- provisioned transfers, medium-congestion windows) so the red team finds a
+genuine weakness while the control play never manufactures risk.
 
 ---
 
 ## Demo workflow
 
-1. The user submits a transaction request with MSISDN, amount, location, and QoD preference.
-2. The dashboard opens a **live SSE stream** (`POST /api/v1/audit/stream`): the request/response flow diagram animates each CAMARA tool as it returns (source + latency), the deterministic synthesis, the LLM specialist/auditor layer (with the model that answered), and finally the verdict — all in real time.
-3. The orchestrator selects the relevant telecom checks.
-4. Tool outputs are normalized into specialist assessments.
-5. The system returns a structured result: status, risk score, reasoning, recommendation, and evidence trail — every tool's raw payload is inspectable in the Evidence Explorer, alongside the LLM raw output.
-6. The UI displays the verdict and the live trace for the operator.
-7. **Adversarial Drill** — the operator can flip roles: the same multi-agent engine plays the attacker, executing a red-team lineup against the live crew. The attacker is dynamic: every run draws a fresh 6-play lineup from a 14-scenario arsenal (SIM-swap OTP interception, cross-border mule relays, congestion-synchronized strikes, staged micro-attacks, mid-size cash-out windows, clean control runs). When an LLM provider is available, the "Fraud Genie" curates the run's names, intents, amounts and regions; otherwise a seeded sampler rotates the arsenal — and any narration failure degrades to the sampler, so the drill never fails. The drill grades defense readiness (0-100 and A-F), surfaces the signal each play was caught on, and reports the blind spots the red team actually discovered. Three structural holes rotate between runs: sub-threshold first strikes (< $25k, clean line), mid-size transfers ($25k-$99k, clean line) where QoD is provisioned yet approval still clears, and Medium-congestion windows that carry no signal at all.
+1. The operator submits a transaction (MSISDN, amount, location, QoD preference).
+2. The dashboard opens a **live SSE stream** (`POST /api/v1/audit/stream`) that
+   animates each CAMARA tool as it returns (source + latency), the deterministic
+   synthesis, the LLM layer, and finally the verdict.
+3. The orchestrator runs the telecom checks, merges evidence, refines with the
+   crew, and returns status, risk score, reasoning, recommendation, and a full
+   evidence trail (every tool payload is inspectable in the Evidence Explorer).
+4. The operator can flip to **Red Team** and run the Adversarial Drill against the
+   same crew.
 
-### Example demo scenario
+A sample number like `+99999991000` triggers the expected high-risk sandbox
+profile (recent SIM swap, failed Number Verification, High congestion, failed
+location, roaming, QoD step-up) — the same drama the `otp-sim-swap` /
+`cross-border-mule` / `congestion-strike` drill archetypes exercise.
 
-A sample number such as +99999991000 triggers the expected high-risk signals in the sandbox path, including:
+---
 
-- recent SIM swap evidence
-- failed Number Verification (device binding could not be confirmed)
-- High cell congestion in the serving area
-- failed location verification
-- roaming context
-- QoD step-up recommendation
+## API overview
 
-Every signal above is also exercised by the drill: the `otp-sim-swap`, `cross-border-mule`, `congestion-strike` and `mule-relay` archetypes hit the exact +99999991000 profile, so the red-team panel shows the same drama as the live audit.
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/api/health` | Liveness + count of active tools (`active_tool_count: 7`) |
+| `POST` | `/api/v1/audit` | One-shot audit → `AuditResponse` |
+| `POST` | `/api/v1/audit/stream` | SSE pipeline progress → verdict |
+| `GET` | `/api/v1/history/{msisdn}` | Recorded audit history for a number |
+| `POST` | `/api/v1/drill/run` | Run the Adversarial Drill |
+| `POST` | `/api/audio/tts` | TTS narration (Deepgram, else edge_tts) |
+| `POST` | `/api/memory/clear-all` | Reset the incident store (test/demo helper) |
+
+`GET /api/health` returns `"active_tool_count": 7` on a configured instance;
+dashboards repoll it every 20s.
 
 ---
 
@@ -116,219 +309,106 @@ aegistel-mena-ignite/
 ├── backend/
 │   ├── app/
 │   │   ├── agents/
-│   │   │   ├── crew_specialists.py
-│   │   │   ├── drill_agent.py
-│   │   │   ├── graph_orchestrator.py
-│   │   │   ├── memory_agent.py
-│   │   │   └── tools.py
-│   │   ├── core/
-│   │   │   └── config.py
-│   │   ├── schemas/
-│   │   │   └── telemetry.py
-│   │   └── main.py
-│   └── tests/
-│       ├── conftest.py
-│       ├── test_adversarial_drill.py
-│       ├── test_audit_route_error_detail.py
-│       ├── test_crew_fallback_chain.py
-│       ├── test_grounding_and_confidence.py
-│       ├── test_number_verification_and_congestion.py
-│       ├── test_orchestrator.py
-│       ├── test_startup_script.py
-│       └── test_tts_fallback.py
+│   │   │   ├── tools.py               # 7 CAMARA tools + SDK/REST/sandbox fallback
+│   │   │   ├── crew_specialists.py    # CrewAI crew + deterministic engine + reconcile
+│   │   │   ├── graph_orchestrator.py  # LangGraph orchestration (execute_audit)
+│   │   │   ├── drill_agent.py         # Adversarial Drill attacker/defender
+│   │   │   └── memory_agent.py        # Incident memory (QDRANT + local)
+│   │   ├── core/config.py             # env-driven settings
+│   │   ├── schemas/telemetry.py       # Pydantic request/response models
+│   │   └── main.py                    # FastAPI app + routes
+│   ├── scripts/round21_eval.py        # behavioral eval gate (deterministic + LLM)
+│   ├── tests/                         # 87 offline tests, zero repo warnings
+│   └── requirements.txt
 ├── frontend/
-│   ├── src/
-│   │   └── app/
-│   │       ├── components/
-│   │       │   └── ThreatStream.tsx
-│   │       ├── globals.css
-│   │       ├── layout.tsx
-│   │       └── page.tsx
-│   ├── package.json
-│   └── README.md
-├── Dockerfile.hf
-├── docker-compose.yml
+│   └── src/app/
+│       ├── components/{AuditFlowDiagram,ThreatStream}.tsx  # live pipeline UI
+│       ├── globals.css / layout.tsx / page.tsx
+├── Dockerfile.hf        # single-container build (HF Spaces / Render)
+├── docker-compose.yml   # two-service local stack
 ├── start.sh
-└── README.md
+├── RUN_AND_TEST.md      # run/test/API-key guide
+└── DEPLOYMENTS.md       # deployment options + env vars
 ```
 
 ---
 
-## Local development
+## Running & testing
 
-### Prerequisites
+For full, judge-ready instructions see **[RUN_AND_TEST.md](RUN_AND_TEST.md)** and
+**[DEPLOYMENTS.md](DEPLOYMENTS.md)**. The essentials:
 
-- Docker and Docker Compose
-- Python 3.12+
-- Node.js 18+
-
-### Backend
-
-```bash
-cd backend
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-PYTHONPATH=. uvicorn app.main:app --reload
-```
-
-### Frontend
+> **Heads-up for reviewers/judges:** AegisTel needs **provider API keys you create
+> yourself** (free tiers are fine) — they are never committed. Before running,
+> create a root `.env` from `backend/.env.example` and fill in your keys
+> (minimum live verdict: an LLM key, `GOOGLE_API_KEY`, `QDRANT_URL` +
+> `QDRANT_API_KEY`). See "Before you run" in RUN_AND_TEST.md.
 
 ```bash
-cd frontend
-npm install
-npm run dev
+# Local: backend (:8000) + frontend (:3000)
+cd backend && uvicorn app.main:app --reload
+cd frontend && npm install && npm run dev
+
+# Two-service Docker stack
+docker compose up --build -d
+
+# Single container (HF Spaces / Render)
+docker build -f Dockerfile.hf -t aegistel . && docker run -p 7860:7860 aegistel
+
+# Offline test suite — 87 passed, 0 warnings (no live keys needed)
+cd backend && ../venv/bin/python -m pytest tests/ -q
 ```
-
-### Docker
-
-```bash
-docker-compose up --build -d
-```
-
-### Useful URLs
-
-- Frontend dashboard: http://localhost:3000
-- FastAPI docs: http://localhost:8000/docs
-
-> For a single consolidated reference covering local, Docker, Dockerfile.hf
-> (HF Spaces / Render) and how to run the test suite, see **[RUN_AND_TEST.md](RUN_AND_TEST.md)**.
->
-> **Heads-up for reviewers/judges:** the app needs provider API keys that you
-> create yourself (free tiers are fine) — they are never committed, so each
-> environment must create a root `.env` from `backend/.env.example`. See
-> "Before you run — create your own API keys" in RUN_AND_TEST.md.
 
 ---
 
 ## Verification status
 
-The current implementation has been validated with fresh checks:
-
-- Backend test suite: **87 passed, 0 failures** (`cd backend && ../venv/bin/python -m pytest tests/ -q`). The suite is fully offline (NaC SDK and LLM calls are stubbed, memory is redirected to a scratch file) and runs with `backend/pytest.ini` filters that silence unrelated third-party deprecation noise (CrewAI/Starlette/torch) — a clean run reports zero repo warnings.
-- Frontend typecheck and lint: clean (`cd frontend && npx tsc --noEmit && npm run lint`)
-- API smoke: `GET /api/health` returns `"active_tool_count": 7`; `POST /api/v1/drill/run` returns a full drill report.
-- Judge-path simulation: `docker compose up --build -d` boots both services; an audit via the frontend proxy returns HTTP 200 with all 7 CAMARA tools and a grounded verdict. `Dockerfile.hf`, local, and Render paths all reach the backend through the same build-time `AEGISTEL_BACKEND_URL` wiring (see `RUN_AND_TEST.md`).
-
-### How to test the Adversarial Drill
-
-**1. Prerequisites** — backend on `:8000` (`uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload` from `backend/`), frontend on `:3000` (`npm run dev` from `frontend/`; Next rewrites `/api/*` to the backend).
-
-**2. API-level (fastest proof):**
-
-```bash
-curl http://localhost:3000/api/health                      # expect active_tool_count: 7
-curl -X POST http://localhost:3000/api/v1/drill/run \
-  -H "Content-Type: application/json" -d '{"use_llm": false}'   # deterministic, ~5s
-```
-
-Remove `"use_llm": false` for the full LLM crew run (plays execute concurrently; ~20-40s). Expect `readiness_score`, `grade`, `outcomes`, one entry per play in `plays[]` (verdict + risk + outcome + `detected_via` signals), and `blind_spots[]` for whatever holes this run's lineup exposed. Rerun the drill and compare — names, intents, amounts and regions change every run.
-
-**3. UI-level (the demo):**
-
-1. Open `http://localhost:3000` — the chip next to "APIs Integrated" must read **7 CAMARA Signals** (it re-polls every 20s; refresh the page if it was loaded before the backend started).
-2. Bottom of the left column: **Red Team — Adversarial Drill** card. Click **RUN ADVERSARIAL DRILL**.
-3. The button switches to "RED TEAM ENGAGED...", the Live Audit Trace shows `DRILL` events, and a voice briefing plays on completion.
-4. Expected results: readiness bar + grade, outcome chips (BLOCKED / ESCALATED / PARTIALLY_MISSED / CLEARED), six play cards with threat level, defense verdict and the signals that caught each play, and an amber **Blind Spot Discovered** box (the lineups in this run, e.g. Micro-Staging First Strike and/or QoD-Provisioned Transfer) with a recommendation.
-5. If a run fails, the red team card now shows the real error inline (banner) and the trace records `error` events — don't ship a "nothing happened" state.
-
-**4. Expected numbers** (`tests/test_adversarial_drill.py` pins the deterministic behavior):
-
-- Deterministic runs (seeded): every run has 6 plays — always a LOW clean control run (CLEARED), always ≥ 2 blind-spot-prone scenarios (PARTIALLY_MISSED), always ≥ 2 heavy-signal plays (BLOCKED / ESCALATED), and the blind-spot set rotates between runs.
-- LLM runs (observed): the Fraud Genie curates fresh names/intents (e.g. "Rush Hour Robbery", "Phantom Transfer Saga"); a curated clean-sweep lineup scored 100.0 / A+ with the honest "no blind spots in this lineup" finding.
-- The blind spot is different between runs — the drill must find a real weakness, the control play must never manufacture risk, and any narration failure degrades to the sampler instead of breaking the drill.
+- **Backend tests:** 87 passed / 0 failures, **0 warnings** (`backend/pytest.ini`
+  filters third-party deprecation noise). The suite is fully offline — SDK and LLM
+  calls are stubbed, memory is redirected to a scratch file.
+- **Frontend:** typecheck + lint clean.
+- **Judge-path simulation:** `docker compose up --build -d` boots both services;
+  an audit via the frontend proxy returns HTTP 200 with all 7 tools and a grounded
+  verdict. Local, `Dockerfile.hf`, and Render all reach the backend through the
+  same `AEGISTEL_BACKEND_URL` wiring.
+- **Live LLM E2E (verified):** real audit in ~69s with `used_fallback: false`,
+  memory initialized, and TTS returning audio (Deepgram → edge_tts fallback).
 
 ---
 
-## Evaluation
+## Evaluation & coherence
 
-The behavioral eval gate (`backend/scripts/round21_eval.py`) runs 10 fixed scenarios against the deterministic rule engine and the LLM-augmented workflow:
-
-```bash
-cd backend && source ../venv/bin/activate
-PYTHONPATH=. python scripts/round21_eval.py --skip-llm    # deterministic only, no quota
-PYTHONPATH=. python scripts/round21_eval.py --verbose     # full LLM-augmented run
-PYTHONPATH=. python scripts/round21_eval.py --verbose --csv results.csv
-```
-
-Latest run on the stable scenario set:
+The behavioral eval gate (`backend/scripts/round21_eval.py`) runs 10 fixed
+scenarios against the deterministic engine and the LLM-augmented workflow:
 
 - **Deterministic-only: 10/10** matched the expected verdict.
-- **LLM-augmented strictness: 10/10** (never more lenient than the deterministic contract).
-- **LLM-augmented exact agreement: 5/10** — the remaining 5 rows were the LLM choosing a *stricter* outcome on confirmed-risk cases (e.g. `REJECTED`/`MANUAL_REVIEW` instead of `STEP_UP_REQUIRED`), which is the intended augmentation.
-- Benign cases (`+99999991001`, sub-threshold amounts) always agree exactly with deterministic `APPROVED`.
+- **LLM-augmented strictness: 10/10** — never more lenient than the deterministic contract.
+- **LLM-augmented exact agreement: 5/10** — the other 5 were the LLM choosing a
+  *stricter* outcome on confirmed risk (e.g. `REJECTED` instead of
+  `STEP_UP_REQUIRED`), which is the intended augmentation.
+- Benign cases (`+99999991001`, sub-threshold amounts) always agree exactly with
+  deterministic `APPROVED`.
 
-Coherence rules enforced by the reconcile layer:
-
-- The LLM may **intensify confirmed risk** (e.g. `STEP_UP_REQUIRED` → `REJECTED`/`BLOCKED`).
-- The LLM **cannot downgrade** grounded risk to a more lenient verdict.
-- The LLM **cannot invent risk** on a clean case: if the deterministic engine returns `APPROVED` with no risk signal, the verdict stays `APPROVED` regardless of model output, so the same transaction yields the same verdict whether the LLM fallback path is active or not.
-- Memory context is weighted into the verdict: a clean case with prior incident history escalates to step-up, and an already-active risk is bumped one severity level. QoD session creation is a consequence of risk, not a signal itself.
-
-The eval runs one scenario at a time with memory cleared for isolation, so free-tier quota is the only limiting factor on the full LLM run.
-
----
-
-## Multi-LLM fallback and quota strategy
-
-AegisTel uses a deliberate multi-model fallback chain so the demo remains resilient when one provider rate limits or becomes unavailable:
-
-- Specialist reasoning first tries Groq's primary GPT-OSS 120B model (the recommended replacement for the decommissioned `llama-3.3-70b-versatile`), with Qwen3.6-27B and GPT-OSS 20B as the Groq tiers beneath it.
-- If that tier hits a quota or availability issue, the workflow falls back to the next available provider in the chain, including Gemini and OpenRouter.
-- The risk auditor uses the same principle on its own path, with Gemini and other providers filling in when needed.
-- Memory operations use Gemini-backed memory extraction so they do not compete with the specialist reasoning budget; reads use a local exact-match fallback for stability on demo hardware.
-
-This separation is intentional: specialist fraud reasoning and memory extraction are treated as distinct workloads with distinct resilience strategies. The deterministic rule engine is treated as the authoritative contract; LLM augmentations may be stricter but are not allowed to silently be more lenient than grounded deterministic values.
+The reconcile layer enforces: LLM may **intensify** confirmed risk, **cannot
+downgrade** grounded risk, and **cannot invent** risk on a clean case — so the
+same transaction yields the same verdict whether the LLM path is active or not.
+Memory context escalates clean-but-previously-flagged cases and bumps active risk
+one severity level; QoD creation is a consequence of risk, not a signal.
 
 ---
 
 ## Use cases
 
-### Fintech security
-
-- Fraud prevention
-- Secure transaction approval
-- Telecom-backed transaction assurance
-
-### Emergency services
-
-- Guaranteed QoS for critical communications
-- Low-latency dispatch workflows
-- Reliable operator coordination
-
-### Smart cities and pilgrimage
-
-- Crowd-aware routing
-- Public safety automation
-- Telecom-contextual decisioning
-
----
-
-## Security and trust
-
-AegisTel emphasizes explainable decisioning and operator transparency:
-
-- SIM swap detection
-- Location verification
-- Roaming awareness
-- Reachability checks
-- QoD-assisted escalation
-- Structured evidence trails
+- **Fintech security** — fraud prevention, secure transaction approval, telecom-backed assurance.
+- **Emergency services** — guaranteed QoS for critical comms, low-latency dispatch, reliable operator coordination.
+- **Smart cities & pilgrimage** — crowd-aware routing, public-safety automation, telecom-contextual decisioning.
 
 ---
 
 ## Team
 
-**Yahia Abdeldjalil**  
-Lead AI Systems & Telecom Infrastructure Engineer
-
----
+**Yahia Abdeldjalil** — Lead AI Systems & Telecom Infrastructure Engineer
 
 ## License
 
-Hackathon submission for GSMA MENA Ignite 2026.
-# 📜 License
-
-Hackathon Submission — GSMA MENA Ignite 2026.
-
-For demonstration and evaluation purposes.
+Hackathon submission for GSMA MENA Ignite 2026 — for demonstration and evaluation purposes.
