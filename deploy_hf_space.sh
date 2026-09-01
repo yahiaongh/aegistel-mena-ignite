@@ -24,7 +24,14 @@ STAGING="$(mktemp -d "aegistel-hf-space.XXXXXX")"
 cleanup() { rm -rf "$STAGING"; }
 trap cleanup EXIT
 
-: "${HF_TOKEN:?Set HF_TOKEN to your Hugging Face write access token}"
+# Prefer the HF_TOKEN env var; otherwise fall back to HF_TOKEN= in the root
+# .env (so `./deploy_hf_space.sh` works with zero token copy-pasting).
+if [ -z "${HF_TOKEN:-}" ] && [ -f "$REPO_ROOT/.env" ]; then
+  HF_TOKEN="$(sed -n 's/^HF_TOKEN=//p' "$REPO_ROOT/.env" | tail -1)"
+  HF_TOKEN="${HF_TOKEN%\"}"; HF_TOKEN="${HF_TOKEN#\"}"
+  HF_TOKEN="${HF_TOKEN%\'}"; HF_TOKEN="${HF_TOKEN#\'}"
+fi
+: "${HF_TOKEN:?Set HF_TOKEN in your root .env (HF_TOKEN=hf_xxxx) or via env var}"
 
 command -v huggingface-cli >/dev/null 2>&1 || pip install --quiet --upgrade huggingface_hub
 
