@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
-# Deploy AegisTel to a free Hugging Face Space (CPU Basic, no credit card).
+# Deprecated for FREE hosting: as of 2026 Hugging Face requires a PRO
+# subscription ($9/mo, needs a card) to host Docker Spaces on free cpu-basic —
+# `hf repo create --type space --sdk docker` returns 402 Payment Required on
+# free accounts. Use RENDER instead (free, no card): deploy via the
+# render.yaml Blueprint at https://render.com (see DEPLOYMENTS.md §4), then set
+# the GitHub repo VARIABLE AEGISTEL_URL so the keep-aegistel-awake workflow
+# keeps it warm. This script remains only as a fallback if you later enable PRO.
 #
 # Creates the Space, stages the current HEAD with a root `Dockerfile`
 # (HF Spaces require the file to be named exactly `Dockerfile`; the project
