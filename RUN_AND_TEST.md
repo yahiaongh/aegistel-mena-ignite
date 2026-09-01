@@ -126,7 +126,10 @@ reset between tests.
 
 ```bash
 cd backend
-../venv/bin/python -m pytest tests/ -q     # 87 tests, no live keys needed
+../venv/bin/python -m pytest tests/ -q     # 89 offline tests + 1 opt-in live test
+
+# Opt-in live behavioral eval (needs real model keys; LLM-vs-deterministic gate):
+../venv/bin/python -m pytest tests/test_behavioral_eval.py --run-live
 ```
 
 `backend/pytest.ini` ships module-scoped filters that silence unrelated

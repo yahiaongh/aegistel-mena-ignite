@@ -317,8 +317,8 @@ aegistel-mena-ignite/
 │   │   ├── core/config.py             # env-driven settings
 │   │   ├── schemas/telemetry.py       # Pydantic request/response models
 │   │   └── main.py                    # FastAPI app + routes
-│   ├── scripts/round21_eval.py        # behavioral eval gate (deterministic + LLM)
-│   ├── tests/                         # 87 offline tests, zero repo warnings
+│   ├── tests/                         # 90 tests (89 offline pass + 1 opt-in live)
+│   │   └── test_behavioral_eval.py    # behavioral eval gate (deterministic + live LLM)
 │   └── requirements.txt
 ├── frontend/
 │   └── src/app/
@@ -355,17 +355,22 @@ docker compose up --build -d
 # Single container (HF Spaces / Render)
 docker build -f Dockerfile.hf -t aegistel . && docker run -p 7860:7860 aegistel
 
-# Offline test suite — 87 passed, 0 warnings (no live keys needed)
+# Offline test suite — 89 passed + 1 opt-in live test (no live keys needed)
 cd backend && ../venv/bin/python -m pytest tests/ -q
+
+# Run the live behavioral eval (needs real model keys):
+cd backend && ../venv/bin/python -m pytest tests/test_behavioral_eval.py --run-live
 ```
 
 ---
 
 ## Verification status
 
-- **Backend tests:** 87 passed / 0 failures, **0 warnings** (`backend/pytest.ini`
-  filters third-party deprecation noise). The suite is fully offline — SDK and LLM
-  calls are stubbed, memory is redirected to a scratch file.
+- **Backend tests:** 89 passed / 0 failures, **0 warnings**, plus **1 opt-in live
+  test** that skips by default (`backend/pytest.ini` filters third-party
+  deprecation noise). The offline portion is fully stubbed — SDK and LLM calls are
+  mocked, memory is redirected to a scratch file. Run the live behavioral eval
+  with `pytest tests/test_behavioral_eval.py --run-live`.
 - **Frontend:** typecheck + lint clean.
 - **Judge-path simulation:** `docker compose up --build -d` boots both services;
   an audit via the frontend proxy returns HTTP 200 with all 7 tools and a grounded
@@ -378,8 +383,11 @@ cd backend && ../venv/bin/python -m pytest tests/ -q
 
 ## Evaluation & coherence
 
-The behavioral eval gate (`backend/scripts/round21_eval.py`) runs 10 fixed
-scenarios against the deterministic engine and the LLM-augmented workflow:
+The behavioral eval gate (`backend/tests/test_behavioral_eval.py`) runs 10 fixed
+scenarios against the deterministic engine and the LLM-augmented workflow. It is
+an opt-in live test (`pytest -q tests/test_behavioral_eval.py --run-live`) —
+the LLM-augmented half needs real model keys, while its deterministic-only
+helpers also run in the normal offline suite:
 
 - **Deterministic-only: 10/10** matched the expected verdict.
 - **LLM-augmented strictness: 10/10** — never more lenient than the deterministic contract.

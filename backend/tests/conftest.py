@@ -9,6 +9,19 @@ from dotenv import load_dotenv
 ROOT_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 load_dotenv(dotenv_path=ROOT_ENV_FILE, override=False)
 
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--run-live",
+        action="store_true",
+        default=False,
+        help="Run opt-in live behavioral eval tests that need real model/telecom access.",
+    )
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "live: opt-in behavioral eval requiring live model + telecom access (run with --run-live)")
+
 # CRITICAL: the test suite must never touch the live demo memory file
 # (backend/data/local_memory.jsonl). Earlier, tests called clear_all_memory()
 # against the real store and wiped the operator's accumulated audit history.
@@ -27,7 +40,12 @@ def reset_provider_cooldown():
 
 
 @pytest.fixture(autouse=True)
-def patch_nokia_sdk(monkeypatch):
+def patch_nokia_sdk(request, monkeypatch):
+    # Live behavioral eval must exercise the REAL telecom tools/SDK, not the stub.
+    if request.node.get_closest_marker("live"):
+        yield
+        return
+
     from app.agents import tools as tool_module
 
     class _FakeNacClient:
