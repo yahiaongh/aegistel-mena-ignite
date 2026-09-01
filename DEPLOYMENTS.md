@@ -47,15 +47,45 @@ docker compose up --build
 - Frontend available at `http://localhost:3000`
 - The backend's Next.js rewrite (`next.config.ts`) forwards `/api/*` to `127.0.0.1:8000`.
 
-## 3. Hugging Face Spaces
+## 3. Hugging Face Spaces — free, no credit card, "always warm"
 
-The root `Dockerfile.hf` is a multi-stage build (Next.js standalone + Python runtime) that serves both the API and the frontend from one container on the Space's port (7860).
+This is the recommended option when there is no credit card: HF free CPU Spaces
+(2 vCPU / 16 GB) cost nothing, need no card, and are publicly reachable over
+HTTPS. The root `Dockerfile.hf` is a multi-stage build (Next.js standalone +
+Python runtime) that serves both the API and the frontend from one container on
+the Space's port (7860) — so the Space runs exactly the same image the judges
+already verified.
 
 - **SDK:** Docker
-- **Port:** 7860 (already default in `Dockerfile.hf`)
-- **User:** the backend Dockerfile uses UID 1000; HF Spaces require a non-root user.
+- **Port:** 7860 (already default in `Dockerfile.hf`; the Space README sets `app_port: 7860`)
+- **Build file:** Spaces require a root `Dockerfile`; the project ships the
+  same build as `Dockerfile.hf`. The helper below stages it under the right name.
 
-Set the env vars from the table below as **Secrets** in the Space settings. `HF_TOKEN` is only needed for model-hosting/private endpoints.
+### 3.1 One-command deploy
+
+```bash
+# free account + write token only (no card)
+HF_TOKEN=hf_xxxxx ./deploy_hf_space.sh
+# -> prints https://<user>-aegistel-mena-ignite.hf.space
+```
+
+The script creates the Space (SDK docker), stages `HEAD` with a root
+`Dockerfile` and a Space `README.md`, and pushes so HF builds and serves it.
+
+### 3.2 Make it never sleep (instant load for judges)
+
+Free Spaces sleep after ~48h of inactivity and take 30–60s to wake. The
+bundled GitHub Action `.github/workflows/keep-hf-space-awake.yml` pings
+`/api/health` every 10 minutes on public-repo free unlimited runners, resetting
+the inactivity timer. Enable it by setting the repo **variable** `HF_SPACE_URL`
+to your Space URL (Settings → Secrets and variables → Actions → Variables).
+Already-deployed judges then get the live site with no cold-start wait.
+
+### 3.3 Secrets
+
+Set the env vars from the table below as **Secrets** in the Space settings
+(Settings → Variables and secrets); saving a secret auto-redeploys.
+`HF_TOKEN` is only needed for model-hosting/private endpoints.
 
 ## 4. Render
 
