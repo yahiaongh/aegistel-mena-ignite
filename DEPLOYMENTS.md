@@ -47,51 +47,70 @@ docker compose up --build
 - Frontend available at `http://localhost:3000`
 - The backend's Next.js rewrite (`next.config.ts`) forwards `/api/*` to `127.0.0.1:8000`.
 
-## 3. Hugging Face Spaces — free, no credit card, "always warm"
+## 3. Hugging Face Spaces — **requires PRO as of 2026, not free**
 
-This is the recommended option when there is no credit card: HF free CPU Spaces
-(2 vCPU / 16 GB) cost nothing, need no card, and are publicly reachable over
-HTTPS. The root `Dockerfile.hf` is a multi-stage build (Next.js standalone +
-Python runtime) that serves both the API and the frontend from one container on
-the Space's port (7860) — so the Space runs exactly the same image the judges
-already verified.
+> **Update (2026):** Hugging Face now returns `402 Payment Required` when
+> creating *Docker* Spaces on free `cpu-basic` — only *Static* Spaces are free.
+> Running AegisTel (a Docker Space) therefore needs a PRO subscription
+> ($9/mo, card required). **Use Render §4 instead for free hosting.**
+> `deploy_hf_space.sh` is kept only as a fallback if you later enable PRO.
+
+The root `Dockerfile.hf` is a multi-stage build (Next.js standalone + Python
+runtime) that serves both the API and the frontend from one container on the
+Space's port (7860).
 
 - **SDK:** Docker
 - **Port:** 7860 (already default in `Dockerfile.hf`; the Space README sets `app_port: 7860`)
-- **Build file:** Spaces require a root `Dockerfile`; the project ships the
-  same build as `Dockerfile.hf`. The helper below stages it under the right name.
+- **Build file:** Spaces require a root `Dockerfile`; `deploy_hf_space.sh`
+  stages `HEAD` with the same build under the right name, plus the non-root
+  UID-1000 user HF recommends.
+- **Secrets:** add your provider keys in the Space settings (Settings →
+  Variables and secrets); saving a secret auto-redeploys.
 
-### 3.1 One-command deploy
+## 4. Render — free, no credit card, "always warm" (recommended)
 
-```bash
-# free account + write token only (no card)
-HF_TOKEN=hf_xxxxx ./deploy_hf_space.sh
-# -> prints https://<user>-aegistel-mena-ignite.hf.space
-```
+The recommended option when no card is available. Render's free web-service
+tier requires **no credit card**, gives **750 free instance hours/month**
+(≈ 24/7 for one service), supports Docker via `Dockerfile.hf`, and serves a
+public HTTPS URL (`https://aegistel.onrender.com`). The only catch — services
+spin down after 15 min of inactivity (30–60s cold start) — is eliminated by the
+bundled keepalive (see 4.2), so judges get an instant-loading page.
 
-The script creates the Space (SDK docker), stages `HEAD` with a root
-`Dockerfile` and a Space `README.md`, and pushes so HF builds and serves it.
+`render.yaml` (shipped at the repo root, Blueprint IaC) already declares the
+web service with `runtime: docker`, `dockerfilePath: ./Dockerfile.hf`,
+`plan: free`, `healthCheckPath: /api/health`, and prompts for the provider keys.
 
-### 3.2 Make it never sleep (instant load for judges)
+### 4.1 One-click deploy (dashboard, no CLI, no card)
 
-Free Spaces sleep after ~48h of inactivity and take 30–60s to wake. The
-bundled GitHub Action `.github/workflows/keep-hf-space-awake.yml` pings
-`/api/health` every 10 minutes on public-repo free unlimited runners, resetting
-the inactivity timer. Enable it by setting the repo **variable** `HF_SPACE_URL`
-to your Space URL (Settings → Secrets and variables → Actions → Variables).
-Already-deployed judges then get the live site with no cold-start wait.
+1. Sign in at https://render.com with your GitHub account (no payment step).
+2. **New → Blueprint** → select this repository (`yahiaongh/aegistel-mena-ignite`).
+3. Render reads `render.yaml`, prompts for each `sync: false` env var — paste
+   the values from your root `.env` (`GROQ_API_KEY`, `GOOGLE_API_KEY`,
+   `QDRANT_URL`, `QDRANT_API_KEY`, and optionally `OPENROUTER_API_KEY`,
+   `NOKIA_NAC_API_KEY`, `DEEPGRAM_API_KEY`). → Apply.
+4. First build takes ~10–15 min (it builds the Next.js + Python image); then
+   the service is live. Public URL: `https://aegistel.onrender.com`.
 
-### 3.3 Secrets
+> Free-tier caveats: free web services run 0.1 vCPU / 512 MB RAM — enough for
+> the demo audit path, but keep concurrent audits low. If you exceed the monthly
+> bandwidth or instance hours, services are **suspended** (never billed) until
+> the next reset — no surprise charges. The filesystem is ephemeral: use the
+> QDRANT keys for durable audit-history/memory, which is the same persistence
+> model as the demo.
 
-Set the env vars from the table below as **Secrets** in the Space settings
-(Settings → Variables and secrets); saving a secret auto-redeploys.
-`HF_TOKEN` is only needed for model-hosting/private endpoints.
+### 4.2 Keep it warm (never spin down → instant load)
 
-## 4. Render
+The bundled GitHub Action `.github/workflows/keep-aegistel-awake.yml` pings
+`/api/health` every 5 minutes on public-repo free unlimited runners, comfortably
+inside Render's 15-minute idle window (and it works for any deployed URL).
 
-Two supported topologies. In both cases, point the service at this repository and the `main` branch.
+Enable it by setting the GitHub repo **variable** `AEGISTEL_URL` (Settings →
+Secrets and variables → Actions → Variables) to your Render URL, e.g.
+`https://aegistel.onrender.com`. Judges can then click the link any time with
+no cold-start wait. (Optional belt-and-braces: an UptimeRobot free monitor on
+the same URL checks every 5 min from outside GitHub.)
 
-### 4.1 Blueprint (Infrastructure as Code)
+### 4.3 Blueprint (Infrastructure as Code, alternative path)
 
 Create `render.yaml` at the repo root with the services you want, e.g.:
 

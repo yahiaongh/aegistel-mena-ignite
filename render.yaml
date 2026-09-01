@@ -1,0 +1,34 @@
+# Render Blueprint — one-click free deploy (no credit card).
+# 1. Sign in at https://render.com with GitHub.
+# 2. New -> Blueprint -> select this repo.
+# 3. Render prompts for the env var values (paste your .env values), deploys
+#    Dockerfile.hf as a free web service, and gives you
+#    https://aegistel.onrender.com (HTTPS).
+# 4. Set the GitHub repo variable AEGISTEL_URL to that URL so
+#    .github/workflows/keep-aegistel-awake.yml pings it every 5 min and the
+#    free tier never spins down (judges get an instant-loading page).
+services:
+  - type: web
+    name: aegistel
+    runtime: docker
+    repo: https://github.com/yahiaongh/aegistel-mena-ignite
+    branch: main
+    dockerfilePath: ./Dockerfile.hf
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /api/health
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: NOKIA_NAC_API_KEY
+        sync: false
+      - key: DEEPGRAM_API_KEY
+        sync: false

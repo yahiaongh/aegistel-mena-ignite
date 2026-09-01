@@ -1,0 +1,39 @@
+name: keep-aegistel-awake
+
+# Free-tier hosts put services to sleep after inactivity:
+#   - Render free web services spin down after 15 minutes (30-60s cold start)
+#   - HF Spaces (Docker) sleep after ~48 hours, but now require PRO anyway
+# GitHub-hosted runners on PUBLIC repos are free with unlimited minutes, so
+# this cron pings the app health endpoint every 5 minutes to reset the
+# inactivity timer and keep the deployed site warm and instantly loadable for
+# judges, with no PC left running.
+#
+# Set the repo VARIABLE `AEGISTEL_URL` (Settings -> Secrets and variables ->
+# Actions -> Variables) to your deployed URL, e.g.
+#   https://aegistel.onrender.com
+# Without it the job no-ops, so the repo stays deploy-safe before you deploy.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping AegisTel health endpoint
+        env:
+          APP_URL: ${{ vars.AEGISTEL_URL }}
+        run: |
+          if [ -z "$APP_URL" ]; then
+            echo "::notice::AEGISTEL_URL repo variable not set; keepalive disabled."
+            exit 0
+          fi
+          # `|| true`: a spinning-up/cold-starting instance is expected during
+          # deploy; the request itself counts as activity, not a red alarm.
+          curl -fsS -A "aegistel-keepalive/1.0" --max-time 90 \
+            "$APP_URL/api/health" >/dev/null || true

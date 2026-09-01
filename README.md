@@ -356,9 +356,9 @@ docker compose up --build -d
 docker build -f Dockerfile.hf -t aegistel . && docker run -p 7860:7860 aegistel
 
 # Free always-on hosted demo for judges (no credit card):
-#   HF_TOKEN=hf_xxx ./deploy_hf_space.sh
-#   -> https://<youruser>-aegistel-mena-ignite.hf.space (kept warm by a free
-#      GitHub Actions cron; see DEPLOYMENTS.md §3 for secrets + keepalive)
+#   render.com -> New -> Blueprint -> this repo (uses render.yaml, Dockerfile.hf)
+#   -> https://aegistel.onrender.com, kept warm by a free GitHub Actions cron
+#   (see DEPLOYMENTS.md §4 for secrets + the AEGISTEL_URL keepalive variable)
 
 # Offline test suite — 89 passed + 1 opt-in live test (no live keys needed)
 cd backend && ../venv/bin/python -m pytest tests/ -q
