@@ -295,5 +295,6 @@ async def execute_audit(request: AuditRequest, progress_callback: Any | None = N
                 "gemini": bool(settings.GOOGLE_API_KEY),
                 "openrouter": bool(settings.OPENROUTER_API_KEY),
             },
+            "providers_reachable": specialist_output.get("providers_reachable", {}),
         },
     )

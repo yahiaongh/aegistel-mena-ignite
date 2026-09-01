@@ -2,6 +2,7 @@
 import json
 import logging
 import re
+import threading
 import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor
@@ -663,6 +664,66 @@ def _model_in_cooldown(model: str) -> bool:
     return False
 
 
+# --- Provider reachability gate -------------------------------------------
+# A configured key is not enough: egress from the deployed host (e.g. Render)
+# can hang on a provider for the whole LLM budget, silently degrading every
+# audit to deterministic. Probe reachability (cached) up front so a blocked
+# host falls straight through to the fast deterministic path instead of
+# burning ~75s on dead connections.
+_PROBE_TTL_S = 120.0
+_PROBE_TIMEOUT_S = 6.0
+_PROBE_CACHE: Dict[str, float] = {}
+_PROBE_CACHE_LOCK = threading.Lock()
+
+
+def _probe_targets() -> Dict[str, tuple[str, Dict[str, str]]]:
+    targets: Dict[str, tuple[str, Dict[str, str]]] = {}
+    if settings.GROQ_API_KEY:
+        targets["groq"] = ("https://api.groq.com/openai/v1/models", {"Authorization": f"Bearer {settings.GROQ_API_KEY}"})
+    if settings.CEREBRAS_API_KEY:
+        targets["cerebras"] = ("https://api.cerebras.ai/v1/models", {"Authorization": f"Bearer {settings.CEREBRAS_API_KEY}"})
+    if settings.OPENROUTER_API_KEY:
+        targets["openrouter"] = ("https://openrouter.ai/api/v1/models", {"Authorization": f"Bearer {settings.OPENROUTER_API_KEY}"})
+    if settings.GOOGLE_API_KEY:
+        targets["gemini"] = (f"https://generativelanguage.googleapis.com/v1beta/models?key={settings.GOOGLE_API_KEY}", {})
+    return targets
+
+
+def _probe_once(provider: str, url: str, headers: Dict[str, str]) -> bool:
+    # Any HTTP response (even 401 for a bad key) proves the host is reachable
+    # from this network; only a connect/TLS/DNS failure means "unreachable".
+    try:
+        import requests
+
+        requests.get(url, headers=headers, timeout=_PROBE_TIMEOUT_S)
+        return True
+    except Exception:
+        return False
+
+
+def _reachable_providers() -> Dict[str, bool]:
+    targets = _probe_targets()
+    if not targets:
+        return {}
+    now = time.monotonic()
+    with _PROBE_CACHE_LOCK:
+        expired = [p for p, cached_at in _PROBE_CACHE.items() if now - cached_at >= _PROBE_TTL_S]
+        for p in expired:
+            _PROBE_CACHE.pop(p, None)
+        cached = {p: True for p in _PROBE_CACHE}
+    missing = {p: (u, h) for p, (u, h) in targets.items() if p not in cached}
+    if missing:
+        with ThreadPoolExecutor(max_workers=len(missing)) as pool:
+            futures = {pool.submit(_probe_once, p, u, h): p for p, (u, h) in missing.items()}
+            results = {futures[f]: f.result() for f in futures}
+        with _PROBE_CACHE_LOCK:
+            for p, reachable in results.items():
+                if reachable:
+                    _PROBE_CACHE[p] = time.monotonic()
+        cached.update(results)
+    return cached
+
+
 def _mark_model_cooldown(model: str, exc: Optional[Exception] = None) -> None:
     _PROVIDER_COOLDOWN[model] = time.monotonic() + _cooldown_window_from_error(exc)
 
@@ -953,9 +1014,19 @@ def run_specialist_crew(
             settings.OPENROUTER_API_KEY,
         ]
     )
-    if force_deterministic or not provider_available:
-        logger.warning("Using deterministic specialist fallback for crew workflow")
-        _emit("llm:fallback", reason="no_provider_credentials" if not provider_available else "forced_deterministic")
+    reachable = _reachable_providers() if provider_available else {}
+    providers_unreachable = provider_available and not any(reachable.values())
+    if providers_unreachable:
+        logger.warning(
+            "Provider egress unreachable from this host (%s); using fast deterministic fallback",
+            sorted(reachable),
+        )
+    if force_deterministic or not provider_available or providers_unreachable:
+        reason = ("forced_deterministic" if force_deterministic
+                  else "no_provider_credentials" if not provider_available
+                  else "providers_unreachable")
+        logger.warning("Using deterministic specialist fallback for crew workflow (%s)", reason)
+        _emit("llm:fallback", reason=reason)
         _emit(
             "crew:done",
             status=deterministic_output["assessment"].get("status"),
@@ -966,9 +1037,10 @@ def run_specialist_crew(
             "assessment": deterministic_output["assessment"],
             "tool_results": executed_tool_results,
             "trace": fallback_trace,
-            "raw_output": "Deterministic fallback used because no provider credentials were configured.",
+            "raw_output": f"Deterministic fallback used because the LLM provider layer is unavailable from this host (reason: {reason}).",
             "used_fallback": True,
             "timing": _timing(0.0),
+            "providers_reachable": reachable,
         }
 
     def _available_models() -> tuple[list[str], list[str]]:
@@ -1237,4 +1309,5 @@ def run_specialist_crew(
         "raw_output": f"Deterministic fallback used after CrewAI failure: {failure_reason}",
         "used_fallback": True,
         "timing": _timing(time.monotonic() - _t_deterministic),
+        "providers_reachable": reachable,
     }
