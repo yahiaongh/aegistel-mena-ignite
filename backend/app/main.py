@@ -87,6 +87,7 @@ async def health() -> Dict[str, Any]:
             "gemini": bool(settings.GOOGLE_API_KEY),
             "openrouter": bool(settings.OPENROUTER_API_KEY),
             "cerebras": bool(settings.CEREBRAS_API_KEY),
+            "deepgram": bool(settings.DEEPGRAM_API_KEY),
         },
     }
 
@@ -143,6 +144,12 @@ async def provider_probe() -> Dict[str, Any]:
             "cerebras",
             "https://api.cerebras.ai/v1/models",
             {"Authorization": f"Bearer {settings.CEREBRAS_API_KEY}"},
+        ))
+    if settings.DEEPGRAM_API_KEY:
+        probes.append(_probe(
+            "deepgram",
+            "https://api.deepgram.com/v1/projects",
+            {"Authorization": f"Token {settings.DEEPGRAM_API_KEY}"},
         ))
     return {"probes": probes}
 
@@ -253,6 +260,9 @@ async def text_to_speech(
     normalized_text = _normalizer.normalize(text)
 
     if settings.DEEPGRAM_API_KEY:
+        # Deepgram is the REQUIRED path when a key is configured: surface a
+        # failure loudly instead of silently swapping to edge_tts, or the demo
+        # hears a different voice than intended and no one knows why.
         try:
             import requests
 
@@ -266,7 +276,14 @@ async def text_to_speech(
             response.raise_for_status()
             return _audio_response(response.content, "deepgram")
         except Exception as exc:
-            logger.warning("Deepgram TTS failed: %s", exc)
+            logger.error("Deepgram TTS failed with a configured key; not degrading silently: %s", exc)
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "detail": f"Deepgram TTS failed: {exc}",
+                    "hint": "Check the DEEPGRAM_API_KEY on the deployment; the app will not silently switch to another voice provider.",
+                },
+            )
 
     if edge_tts is None:
         return JSONResponse(status_code=503, content={"detail": "TTS backend is unavailable in this environment"})
