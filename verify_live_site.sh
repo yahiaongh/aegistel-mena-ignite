@@ -38,8 +38,9 @@ echo
 echo "-- 2. Backend health --"
 code=$(curl -sS -o /tmp/aeg_health.json -w '%{http_code}' --max-time 60 "$URL/api/health")
 tools=$(python3 -c "import json;print(json.load(open('/tmp/aeg_health.json')).get('active_tool_count'))" 2>/dev/null || echo "?")
+provs=$(python3 -c "import json;d=json.load(open('/tmp/aeg_health.json'));print(d.get('providers_configured'))" 2>/dev/null || echo "?")
 if [ "$code" = "200" ] && [ "$tools" = "7" ]; then
-  ok "health $code active_tool_count=$tools"
+  ok "health $code active_tool_count=$tools providers_configured=$provs"
 else
   bad "health HTTP $code active_tool_count=$tools (body: $(head -c 120 /tmp/aeg_health.json 2>/dev/null))"
 fi
@@ -58,7 +59,9 @@ d = json.load(open('/tmp/aeg_audit.json'))
 status = d.get('status'); risk = d.get('risk_score'); fb = d.get('used_fallback')
 providers = sorted({t.get('provider') for t in (d.get('agent_trace') or []) if t.get('provider')})
 models = [t.get('model') for t in (d.get('agent_trace') or []) if t.get('model')]
+diag = d.get('diagnostics', {})
 print(f"summary=status {status} | risk {risk} | used_fallback {fb} | providers {providers} | models {models[:3]}")
+print(f"timing_ms={diag.get('timing_ms')} phases_ms={diag.get('phases_ms')} providers_config={diag.get('providers_configured')}")
 valid = status in ("APPROVED","REJECTED","BLOCKED","STEP_UP_REQUIRED","MANUAL_REVIEW") and risk
 sys.exit(0 if valid else 1)
 PY

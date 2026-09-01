@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+import time
 from typing import Annotated, Any, Dict, List, Literal, TypedDict
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
@@ -130,6 +131,10 @@ SIMULATOR_MSISDNS = {"+99999991000", "+99999991001", "+99999991002", "+999999910
 
 
 async def execute_audit(request: AuditRequest, progress_callback: Any | None = None) -> AuditResponse:
+    t0 = time.monotonic()
+    def _mark(label: str) -> float:
+        return round((time.monotonic() - t0) * 1000, 1)
+    timing: Dict[str, float] = {"total_ms": 0.0}
     request_context = {
         "msisdn": request.msisdn,
         "amount": request.amount,
@@ -148,6 +153,7 @@ async def execute_audit(request: AuditRequest, progress_callback: Any | None = N
             request.msisdn,
             f"fraud pattern {request.transaction_type} {request.current_location.latitude} {request.current_location.longitude}",
         )
+    timing["memory_retrieve_ms"] = _mark("memory_retrieve")
     if progress_callback is not None:
         try:
             # Report the full recorded trail (simulator audits are recorded but
@@ -184,6 +190,7 @@ async def execute_audit(request: AuditRequest, progress_callback: Any | None = N
         "progress_callback": progress_callback,
     }
     final_state = await aegis_graph.ainvoke(initial_input)
+    timing["crew_ms"] = round((time.monotonic() - t0) * 1000, 1) - timing["memory_retrieve_ms"]
     specialist_output = final_state.get("specialist_output", {}) if isinstance(final_state.get("specialist_output"), dict) else {}
     assessment = FinalAssessment(**final_state["assessment"].model_dump()) if final_state.get("assessment") else FinalAssessment(**specialist_output.get("assessment", {}))
 
@@ -254,6 +261,7 @@ async def execute_audit(request: AuditRequest, progress_callback: Any | None = N
             "roaming_status": assessment.roaming_status,
         },
     )
+    timing["total_ms"] = round((time.monotonic() - t0) * 1000, 1)
     # Quick coherence check: if the textual recommended action clearly contradicts
     # the structured `status`, add a trace item so the UI highlights the mismatch
     rec_lower = (assessment.recommended_action or "").lower()
@@ -279,4 +287,13 @@ async def execute_audit(request: AuditRequest, progress_callback: Any | None = N
         agent_trace=trace,
         used_fallback=specialist_output.get("used_fallback", False),
         raw_output=specialist_output.get("raw_output"),
+        diagnostics={
+            "timing_ms": timing,
+            "phases_ms": specialist_output.get("timing", {}),
+            "providers_configured": {
+                "groq": bool(settings.GROQ_API_KEY),
+                "gemini": bool(settings.GOOGLE_API_KEY),
+                "openrouter": bool(settings.OPENROUTER_API_KEY),
+            },
+        },
     )

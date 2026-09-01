@@ -838,6 +838,7 @@ def run_specialist_crew(
     latitude = float(request_context.get("latitude", 24.7))
     request_qod = bool(request_context.get("request_qod"))
 
+    _t_start = time.monotonic()
     transaction_type = str(request_context.get("transaction_type", "")).upper()
 
     metadata = request_context.get("metadata") or {}
@@ -893,6 +894,7 @@ def run_specialist_crew(
                 status="ok" if isinstance(_payload, dict) and _payload.get("status_code", 200) < 400 else "error",
                 duration_ms=duration_ms,
             )
+    _t_tools = time.monotonic()
 
     # Pre-compute the deterministic risk signal from the base telemetry so the
     # QoD decision can react to actual risk (auto-provision on risk), not just
@@ -927,6 +929,14 @@ def run_specialist_crew(
     )
     fallback_trace = deterministic_output.get("trace", [])
     failure_reason = "CrewAI not executed"
+    _t_deterministic = time.monotonic()
+
+    def _timing(llm_ms: float) -> Dict[str, Any]:
+        return {
+            "tools_ms": round((_t_tools - _t_start) * 1000, 1),
+            "deterministic_ms": round((_t_deterministic - _t_tools) * 1000, 1),
+            "llm_ms": round(llm_ms * 1000, 1),
+        }
 
     force_deterministic = bool(request_context.get("force_deterministic"))
 
@@ -952,6 +962,7 @@ def run_specialist_crew(
             "trace": fallback_trace,
             "raw_output": "Deterministic fallback used because no provider credentials were configured.",
             "used_fallback": True,
+            "timing": _timing(0.0),
         }
 
     def _available_models() -> tuple[list[str], list[str]]:
@@ -1186,6 +1197,7 @@ def run_specialist_crew(
         _emit("llm:start", specialist=specialist_model, auditor=auditor_model, tier=model_index + 1)
         crew_run = _try_crew_run(specialist_model, auditor_model, model_index)
         if crew_run is not None:
+            crew_run["timing"] = _timing(time.monotonic() - _t_deterministic)
             _emit("llm:done", specialist=specialist_model, auditor=auditor_model, tier=model_index + 1)
             _emit(
                 "crew:done",
@@ -1213,4 +1225,5 @@ def run_specialist_crew(
         "trace": fallback_trace,
         "raw_output": f"Deterministic fallback used after CrewAI failure: {failure_reason}",
         "used_fallback": True,
+        "timing": _timing(time.monotonic() - _t_deterministic),
     }

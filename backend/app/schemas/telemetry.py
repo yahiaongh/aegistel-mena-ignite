@@ -81,3 +81,4 @@ class AuditResponse(BaseModel):
     agent_trace: List[AgentTraceItem] = Field(default_factory=list)
     used_fallback: bool = False
     raw_output: Optional[str] = None
+    diagnostics: Dict[str, Any] = Field(default_factory=dict)

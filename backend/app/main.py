@@ -82,6 +82,12 @@ async def health() -> Dict[str, Any]:
         "service": "AegisTel",
         "mode": "autonomous",
         "active_tool_count": _count_active_tools(),
+        "providers_configured": {
+            "groq": bool(settings.GROQ_API_KEY),
+            "gemini": bool(settings.GOOGLE_API_KEY),
+            "openrouter": bool(settings.OPENROUTER_API_KEY),
+            "cerebras": bool(settings.CEREBRAS_API_KEY),
+        },
     }
 
 
