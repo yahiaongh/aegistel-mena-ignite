@@ -1,0 +1,38 @@
+name: keep-hf-space-awake
+
+# Free Hugging Face Spaces fall asleep after ~48h of inactivity and take
+# 30-60s to wake, which ruins the "judges can just click the link" demo.
+# GitHub-hosted runners on PUBLIC repos are free with unlimited minutes, so
+# this cron pings the Space health endpoint every 10 minutes to reset the
+# inactivity timer and keep the site warm and instantly loadable.
+#
+# Set the repo VARIABLE `HF_SPACE_URL` (Settings -> Secrets and variables ->
+# Actions -> Variables) to your Space URL, e.g.
+#   https://youruser-aegistel.hf.space
+# Without it the job no-ops, so the repo stays deploy-safe before the Space
+# exists.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping AegisTel Space health endpoint
+        env:
+          SPACE_URL: ${{ vars.HF_SPACE_URL }}
+        run: |
+          if [ -z "$SPACE_URL" ]; then
+            echo "::notice::HF_SPACE_URL repo variable not set; keepalive disabled."
+            exit 0
+          fi
+          # `|| true`: a sleeping/cold-starting Space is expected during a
+          # redeploy; the run should still count as activity, not a red alarm.
+          curl -fsS -A "aegistel-keepalive/1.0" --max-time 60 \
+            "$SPACE_URL/api/health" >/dev/null || true
