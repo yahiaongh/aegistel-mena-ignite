@@ -33,12 +33,21 @@ if [ -z "${HF_TOKEN:-}" ] && [ -f "$REPO_ROOT/.env" ]; then
 fi
 : "${HF_TOKEN:?Set HF_TOKEN in your root .env (HF_TOKEN=hf_xxxx) or via env var}"
 
-command -v huggingface-cli >/dev/null 2>&1 || pip install --quiet --upgrade huggingface_hub
+command -v hf >/dev/null 2>&1 || pip install --quiet --upgrade huggingface_hub
+command -v hf >/dev/null 2>&1 || command -v huggingface-cli >/dev/null 2>&1 \
+  || pip install --quiet --upgrade huggingface_hub
+
+# huggingface-cli is deprecated in huggingface_hub>=1.26; prefer `hf`.
+if command -v hf >/dev/null 2>&1; then
+  HF_CLI="hf "
+else
+  HF_CLI="huggingface-cli"
+fi
 
 echo ">> Creating Space <$SPACE_NAME> with Docker SDK ..."
-huggingface-cli login --token "$HF_TOKEN" >/dev/null
-huggingface-cli repo create "$SPACE_NAME" \
-  --type space --space_sdk docker
+# Login sets up git credentials for the push below.
+$HF_CLI auth login --token "$HF_TOKEN" --add-to-git-credential >/dev/null
+$HF_CLI repo create "$SPACE_NAME" --type space --sdk docker --token "$HF_TOKEN"
 
 HF_USER="$(
   python3 - <<'PY'
