@@ -368,9 +368,11 @@ cd backend && ../venv/bin/python -m pytest tests/test_behavioral_eval.py --run-l
 
 - **Backend tests:** 89 passed / 0 failures, **0 warnings**, plus **1 opt-in live
   test** that skips by default (`backend/pytest.ini` filters third-party
-  deprecation noise). The offline portion is fully stubbed — SDK and LLM calls are
-  mocked, memory is redirected to a scratch file. Run the live behavioral eval
-  with `pytest tests/test_behavioral_eval.py --run-live`.
+  deprecation noise). The offline portion is genuinely network-free: the SDK is
+  stubbed in a conftest fixture, LLM provider keys are blanked (forcing the
+  deterministic crew fallback so no live model call can hang the suite), mem0's
+  live extraction is disabled, and memory is redirected to a scratch file. Run
+  the live behavioral eval with `pytest tests/test_behavioral_eval.py --run-live`.
 - **Frontend:** typecheck + lint clean.
 - **Judge-path simulation:** `docker compose up --build -d` boots both services;
   an audit via the frontend proxy returns HTTP 200 with all 7 tools and a grounded
@@ -396,6 +398,14 @@ helpers also run in the normal offline suite:
   `STEP_UP_REQUIRED`), which is the intended augmentation.
 - Benign cases (`+99999991001`, sub-threshold amounts) always agree exactly with
   deterministic `APPROVED`.
+
+> **Live caveat:** the free tiers used by the demo (Groq `gpt-oss-20b`/`gpt-oss-120b`
+> ~8000 TPM, Gemini embeddings, CAMARA sandbox) are small, so a `--run-live` pass
+> can transiently exhaust quota (e.g. Groq `413 tokens per minute` or Gemini
+> `RESOURCE_EXHAUSTED`). These are classified as retryable rate-limit conditions:
+> the crew cooldowns the affected model, walks the fallback chain, and finally
+> lands on the deterministic contract, while memory writes degrade to the local
+> store — so the eval stays coherent (never lenient) even under quota pressure.
 
 The reconcile layer enforces: LLM may **intensify** confirmed risk, **cannot
 downgrade** grounded risk, and **cannot invent** risk on a clean case — so the
