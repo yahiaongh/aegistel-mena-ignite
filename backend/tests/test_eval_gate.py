@@ -1,7 +1,7 @@
 import pytest
 from app.agents.crew_specialists import synthesize_specialist_assessment
 
-# Reuse the same scenarios used by scripts/round21_eval.py
+# Reuse the same scenarios used by tests/test_behavioral_eval.py
 SCENARIOS = [
     {"msisdn": "+99999991000", "amount": 120000.0, "expected": "STEP_UP_REQUIRED"},
     {"msisdn": "+99999991001", "amount": 100.0, "expected": "APPROVED"},
