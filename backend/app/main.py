@@ -91,6 +91,62 @@ async def health() -> Dict[str, Any]:
     }
 
 
+@router.get("/diagnostics/provider_probe")
+async def provider_probe() -> Dict[str, Any]:
+    """Read-only connectivity probe to each configured LLM provider. Proves from
+    inside the host (e.g. Render) which providers are reachable and that the
+    configured key authenticates, so model-chain trouble can be told apart from
+    egress/network trouble with one call."""
+    import requests as _requests
+
+    def _probe(name: str, url: str, headers: dict, timeout: float = 12.0) -> Dict[str, Any]:
+        started = time.monotonic()
+        try:
+            r = _requests.get(url, headers=headers, timeout=timeout)
+            return {
+                "provider": name,
+                "reachable": True,
+                "http": r.status_code,
+                "latency_ms": round((time.monotonic() - started) * 1000, 1),
+                "detail": (r.text or "")[:120],
+            }
+        except Exception as exc:
+            return {
+                "provider": name,
+                "reachable": False,
+                "http": None,
+                "latency_ms": round((time.monotonic() - started) * 1000, 1),
+                "detail": type(exc).__name__,
+            }
+
+    probes: List[Dict[str, Any]] = []
+    if settings.GROQ_API_KEY:
+        probes.append(_probe(
+            "groq",
+            "https://api.groq.com/openai/v1/models",
+            {"Authorization": f"Bearer {settings.GROQ_API_KEY}"},
+        ))
+    if settings.OPENROUTER_API_KEY:
+        probes.append(_probe(
+            "openrouter",
+            "https://openrouter.ai/api/v1/models",
+            {"Authorization": f"Bearer {settings.OPENROUTER_API_KEY}"},
+        ))
+    if settings.GOOGLE_API_KEY:
+        probes.append(_probe(
+            "gemini",
+            f"https://generativelanguage.googleapis.com/v1beta/models?key={settings.GOOGLE_API_KEY}",
+            {},
+        ))
+    if settings.CEREBRAS_API_KEY:
+        probes.append(_probe(
+            "cerebras",
+            "https://api.cerebras.ai/v1/models",
+            {"Authorization": f"Bearer {settings.CEREBRAS_API_KEY}"},
+        ))
+    return {"probes": probes}
+
+
 def _audit_error_response(exc: Exception, status_code: int) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
