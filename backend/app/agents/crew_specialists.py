@@ -615,7 +615,26 @@ def _reconcile_crew_output(parsed_output: Dict[str, Any], deterministic_output: 
 
 def _is_rate_limit_or_availability_error(exc: Exception) -> bool:
     text = str(exc).lower()
-    return any(marker in text for marker in ("429", "402", "rate_limit", "rate limit", "quota", "insufficient credits", "no longer available", "temporarily unavailable", "service unavailable", "overloaded", "resource_exhausted"))
+    return any(
+        marker in text
+        for marker in (
+            "429",
+            "402",
+            "413",
+            "rate_limit",
+            "rate limit",
+            "quota",
+            "tokens per minute",
+            "tpm",
+            "request too large",
+            "insufficient credits",
+            "no longer available",
+            "temporarily unavailable",
+            "service unavailable",
+            "overloaded",
+            "resource_exhausted",
+        )
+    )
 
 
 def _is_crew_tool_validation_error(exc: Exception) -> bool:

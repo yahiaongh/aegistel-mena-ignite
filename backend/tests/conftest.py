@@ -31,6 +31,31 @@ os.environ["AEGISTEL_MEMORY_PATH"] = str(_TEST_MEMORY_PATH)
 
 
 @pytest.fixture(autouse=True)
+def force_deterministic_offline(request, monkeypatch):
+    # Live behavioral eval must run the REAL LLM + telecom access.
+    if request.node.get_closest_marker("live"):
+        yield
+        return
+
+    from app.core.config import settings
+    from app.agents.memory_agent import memory_engine
+
+    # Blank every LLM provider credential so the specialist crew takes its
+    # deterministic, network-free fallback (line 916-935 of crew_specialists.py)
+    # instead of making live model calls. This keeps the "offline" suite
+    # genuinely free of network access and never wedges on a hung LLM request.
+    for key in ("GROQ_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY", "CEREBRAS_API_KEY"):
+        setattr(settings, key, "")
+
+    # Disable mem0's live LLM extraction so record_incident / store_security_event
+    # (memory_agent.py:152-159) write only to the scratch store, with no Groq /
+    # Gemini request. Retrieval is already local-only via the [Round12] guard.
+    monkeypatch.setattr(memory_engine, "memory", None)
+
+    yield
+
+
+@pytest.fixture(autouse=True)
 def reset_provider_cooldown():
     from app.agents import crew_specialists
 

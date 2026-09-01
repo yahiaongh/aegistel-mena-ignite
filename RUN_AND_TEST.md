@@ -79,6 +79,11 @@ npm install
 npm run dev
 ```
 
+> `requirements.txt` pins the exact validated set (crewai==1.15.8, langchain-*
+> 1.3.x/1.5.x, mem0ai==2.0.5, openai==2.50.0, …), so a fresh install reproduces
+> the environment this suite was verified against instead of pip backtracking to
+> an older, broken crewai release.
+
 - Dashboard: http://localhost:3000
 - API docs: http://localhost:8000/docs
 - Health: `curl http://localhost:8000/api/health`
@@ -120,9 +125,16 @@ or the bundled systemd timer).
 
 ## Running the test suite
 
-Python 3.12. The suite is offline/network-free: the Nokia NaC SDK and LLM calls
-are stubbed, memory is redirected to a scratch file, and provider cooldowns are
-reset between tests.
+Python 3.12. The default suite is genuinely offline/network-free — it never
+touches a live model or the telecom SDK:
+
+- The Nokia NaC SDK is replaced by an in-memory stub fixture (conftest).
+- LLM provider credentials are blanked, so `execute_audit` and the specialist
+  crew take their deterministic, network-free fallback (no live model calls,
+  so nothing can wedge on a hung or rate-limited upstream).
+- mem0's live LLM/embedding extraction is disabled, so memory writes land only
+  in a scratch store redirected via `AEGISTEL_MEMORY_PATH`.
+- Provider cooldowns are reset between tests.
 
 ```bash
 cd backend
@@ -131,6 +143,15 @@ cd backend
 # Opt-in live behavioral eval (needs real model keys; LLM-vs-deterministic gate):
 ../venv/bin/python -m pytest tests/test_behavioral_eval.py --run-live
 ```
+
+> **Live caveat:** `--run-live` performs real LLM and telecom calls. The free
+> tiers used by the demo (Groq 8000 TPM, Gemini embeddings, CAMARA sandbox) are
+> small, so repeated/large runs can transiently exhaust quota (e.g. Groq
+> `413 tokens per minute`, Gemini `RESOURCE_EXHAUSTED`). Such errors are treated
+> as retryable rate-limit conditions — the crew cooldowns the model and falls
+> back to the next tier or the deterministic contract, and memory writes degrade
+> to the local store. Verdicts therefore remain honest even under quota pressure;
+> they just may not reflect the top-tier model.
 
 `backend/pytest.ini` ships module-scoped filters that silence unrelated
 third-party deprecation warnings (CrewAI, Starlette), so a clean run reports
