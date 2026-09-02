@@ -100,15 +100,24 @@ web service with `runtime: docker`, `dockerfilePath: ./Dockerfile.hf`,
 
 ### 4.2 Keep it warm (never spin down → instant load)
 
-The bundled GitHub Action `.github/workflows/keep-aegistel-awake.yml` pings
-`/api/health` every 5 minutes on public-repo free unlimited runners, comfortably
-inside Render's 15-minute idle window (and it works for any deployed URL).
+The **reliable** way is an external free monitor that pings the site from
+*outside* Render/GitHub every time slot — an internal cron job inside the app
+cannot wake the app (it is asleep too). Readers must be < 15 min apart; use
+5–10 min to be safe:
 
-Enable it by setting the GitHub repo **variable** `AEGISTEL_URL` (Settings →
-Secrets and variables → Actions → Variables) to your Render URL, e.g.
-`https://aegistel.onrender.com`. Judges can then click the link any time with
-no cold-start wait. (Optional belt-and-braces: an UptimeRobot free monitor on
-the same URL checks every 5 min from outside GitHub.)
+1. **cron-job.org** (free, no card, 1-min precision, per-job request history):
+   create an account → **Create cronjob** → URL
+   `https://aegistel.onrender.com/api/health` → schedule **every 10 minutes** →
+   Save. Verify the "Last Execution" log shows 200s.
+2. **UptimeRobot** (free) as a second independent monitor on the same URL,
+   interval 5 min — belt-and-braces; it also flags if the site ever hangs.
+
+The bundled `.github/workflows/keep-aegistel-awake.yml` is **best-effort only**:
+GitHub's cron dispatcher delays scheduled runs by hours on low-traffic public
+repos, so it cannot guarantee the wake. Set the repo **variable** `AEGISTEL_URL`
+(Settings → Secrets and variables → Actions → Variables) to
+`https://aegistel.onrender.com` and leave the workflow enabled as a harmless
+backup, but the external monitor is what actually keeps it warm.
 
 ### 4.3 Blueprint (Infrastructure as Code, alternative path)
 
@@ -212,7 +221,7 @@ python -m pytest tests -q
 ## 6. Common issues
 
 - **CORS errors in production:** `FRONTEND_ORIGIN` defaults to `localhost:3000`. Set it to the deployed frontend origin.
-- **Free-tier cold starts:** Render free instances sleep after 15 min of idle; the first request can take 30–60s. The keepalive workflow (`AEGISTEL_URL` repo variable) pings every 5 min — set it and the site stays warm. The API audit timeout is 120s; cold starts that exceed Render's ~100s proxy cap surface as a `502`.
+- **Free-tier cold starts:** Render free instances sleep after 15 min of idle; the first request can take 30–60s. Set up the external monitor in **§4.2** (cron-job.org / UptimeRobot) so the site stays warm and judges get an instant page — treat the GitHub-Action ping as backup, since GitHub's cron is unreliable for this cadence. The API audit timeout is 120s; cold starts that exceed Render's ~100s proxy cap surface as a `502`.
 - **Slow audits / `used_fallback: true` / `x-tts-source` not `deepgram` on a deployed site:** almost always **stale environment keys** on the host. Render's env must match your local root `.env`. Validate from inside the host with `GET <url>/diagnostics/provider_probe` (per-provider reachability + HTTP status) and check `GET <url>/api/health` -> `providers_configured`.
 - **Planned provider egress is blocked (all probes fail):** the audit fast-falls back to the deterministic engine (~4s) via the cached reachability gate, so the demo never hangs while waiting on a dead model connection.
 - **429 on audits:** The app already cooldowns rate-limited providers and falls back; if all providers are exhausted, the deterministic `synthesize_specialist_assessment` path returns a fallback assessment.
