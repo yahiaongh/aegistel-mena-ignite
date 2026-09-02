@@ -164,7 +164,7 @@ Use the `render.yaml` `sync: false` pattern or dashboard secrets for anything se
 | `OPENROUTER_API_KEY` | optional | Fast reliable fallback, preferred before Gemini in `MODEL_CHAIN` |
 | `CEREBRAS_API_KEY` | optional | Additional provider |
 | `OPENAI_API_KEY` | optional | Additional provider |
-| `DEEPGRAM_API_KEY` | optional | TTS; falls back to `edge_tts` when absent |
+| `DEEPGRAM_API_KEY` | optional | TTS. When set it is used **strictly** (a 401/failure surfaces as a 503 with a hint, never a silent voice swap); `edge_tts` is used only when no key is set |
 | `NOKIA_NAC_API_KEY` | optional (sandbox falls back) | Network-as-Code (RapidAPI) key for live CAMARA calls |
 | `NOKIA_CAMARA_BASE_URL` | optional | Override NaC base URL |
 | `QDRANT_URL` / `QDRANT_API_KEY` | required for memory | Persistent memory backend; feeds incident context into the verdict |
@@ -212,6 +212,8 @@ python -m pytest tests -q
 ## 6. Common issues
 
 - **CORS errors in production:** `FRONTEND_ORIGIN` defaults to `localhost:3000`. Set it to the deployed frontend origin.
-- **Free-tier cold starts:** Render free instances and HF Spaces sleep; the first request after idle can take 30–60s. The API has a 35s audit timeout — cold starts can surface as `504`.
+- **Free-tier cold starts:** Render free instances sleep after 15 min of idle; the first request can take 30–60s. The keepalive workflow (`AEGISTEL_URL` repo variable) pings every 5 min — set it and the site stays warm. The API audit timeout is 120s; cold starts that exceed Render's ~100s proxy cap surface as a `502`.
+- **Slow audits / `used_fallback: true` / `x-tts-source` not `deepgram` on a deployed site:** almost always **stale environment keys** on the host. Render's env must match your local root `.env`. Validate from inside the host with `GET <url>/diagnostics/provider_probe` (per-provider reachability + HTTP status) and check `GET <url>/api/health` -> `providers_configured`.
+- **Planned provider egress is blocked (all probes fail):** the audit fast-falls back to the deterministic engine (~4s) via the cached reachability gate, so the demo never hangs while waiting on a dead model connection.
 - **429 on audits:** The app already cooldowns rate-limited providers and falls back; if all providers are exhausted, the deterministic `synthesize_specialist_assessment` path returns a fallback assessment.
 - **Memory not persisting:** Without a valid `QDRANT_URL`/`QDRANT_API_KEY`, mem0 falls back to an in-process store that resets on redeploy.
