@@ -4,9 +4,11 @@
 # 3. Render prompts for the env var values (paste your .env values), deploys
 #    Dockerfile.hf as a free web service, and gives you
 #    https://aegistel.onrender.com (HTTPS).
-# 4. Set the GitHub repo variable AEGISTEL_URL to that URL so
-#    .github/workflows/keep-aegistel-awake.yml pings it every 5 min and the
-#    free tier never spins down (judges get an instant-loading page).
+# 4. Keep it warm: add a free external monitor (cron-job.org or UptimeRobot) on
+#    https://<your-app>.onrender.com/api/health every 5-10 min (see DEPLOYMENTS
+#    §4.2). Also set the GitHub repo variable AEGISTEL_URL so the backup
+#    keep-aegistel-awake workflow can ping it, but the external monitor is the
+#    reliable wake — GitHub cron delays scheduled runs for hours on free repos.
 services:
   - type: web
     name: aegistel
