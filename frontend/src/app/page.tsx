@@ -41,7 +41,6 @@ import {
   PolarRadiusAxis,
   Radar,
 } from "recharts";
-import ThreatStream from "./components/ThreatStream";
 import AuditFlowDiagram, { type FlowState, type FlowTool } from "./components/AuditFlowDiagram";
 
 interface ToolResult {
@@ -573,12 +572,6 @@ export default function AegisTelDashboard() {
     }
   };
 
-  const handleSelectThreat = (threatMsisdn: string, threatAmount: number) => {
-    setMsisdn(threatMsisdn);
-    setAmount(threatAmount.toString());
-    void runAudit(threatMsisdn, threatAmount.toString());
-  };
-
   const runDrill = async () => {
     setDrillLoading(true);
     setDrillError(null);
@@ -702,8 +695,6 @@ export default function AegisTelDashboard() {
 
       <div className="p-4 sm:p-6 max-w-[1600px] mx-auto grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-6">
         <div className="lg:col-span-4 space-y-6">
-          <ThreatStream onSelectThreat={handleSelectThreat} />
-
           <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 space-y-4 shadow-lg">
             <div className="flex justify-between items-center border-b border-slate-800 pb-3">
               <h2 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-2">
