@@ -585,16 +585,33 @@ export default function AegisTelDashboard() {
       },
     ]);
     try {
-      const res = await fetch(`${apiBase}/api/v1/drill/run`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        throw new Error(body?.detail ? `${body.error ?? "Request failed"}: ${body.detail}` : `HTTP ${res.status}`);
+      let retries = 2;
+      let res: Response | null = null;
+      while (retries >= 0) {
+        res = await fetch(`${apiBase}/api/v1/drill/run`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        if (res.ok || res.status !== 502 && res.status !== 503) break;
+        const backoffMs = 2500 * (3 - retries);
+        setLiveEvents((prev) => [
+          ...prev,
+          {
+            id: `${Date.now()}-drill-retry`,
+            type: "error",
+            message: `Drill interrupted (HTTP ${res!.status}); retrying in ${(backoffMs / 1000).toFixed(0)}s`,
+            stage: "drill",
+          },
+        ]);
+        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        retries -= 1;
       }
-      const data: DrillReport = await res.json();
+      if (!res!.ok) {
+        const body = await res!.json().catch(() => null);
+        throw new Error(body?.detail ? `${body.error ?? "Request failed"}: ${body.detail}` : `HTTP ${res!.status}`);
+      }
+      const data: DrillReport = await res!.json();
       setDrillResult(data);
       setLiveEvents((prev) => [
         ...prev,

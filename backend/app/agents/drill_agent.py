@@ -330,16 +330,20 @@ _HEAVY_IDS = [a["id"] for a in _ARCHETYPES if a["threat_level"] in {"HIGH", "CRI
 # Wall-clock budget for a single LLM-run play: if the crew chain cannot finish
 # in time (rate limits, slow providers), the play degrades to the deterministic
 # engine instead of dangling the drill.
-_PLAY_LLM_BUDGET_S = 45
+_PLAY_LLM_BUDGET_S = 18
 
 # TOTAL wall-clock cap for a whole drill run, INCLUDING the Fraud Genie
-# narration. This is the guard against the 502s we saw: the wait loop below
-# used to give each future its own full 45s sequentially (6 x 45s can exceed
-# the 180s endpoint cap), and because asyncio.TimeoutError subclasses OSError
-# on Python 3.11+, the endpoint then mis-reported the timeout as a 502.
-# 120s here + endpoint cap of 150s keeps the drill comfortably inside the cap
-# with slack for the deterministic rescue path.
-_DRILL_WALL_CLOCK_S = 120
+# narration. Hard evidence from the live site: Render's proxy kills any request
+# that exceeds ~90s (an empty-body 502 at 90.8s was observed), and a second
+# back-to-back LLM drill on the 512 MB free instance can blow the worker
+# entirely. So the whole drill MUST stay well under ~85s and keep peak memory
+# down (see workers below). Timeout budget: narration <= 20s, first play(s)
+# <= 18s each, the rest degrade to the fast deterministic engine. Since
+# asyncio.TimeoutError subclasses OSError on Python 3.11+, the endpoint also
+# catches TimeoutError explicitly and reports an honest 504 instead of a 502.
+# 75s here + endpoint cap of 85s keeps the request under the proxy ceiling
+# with slack for deterministic rescues.
+_DRILL_WALL_CLOCK_S = 75
 
 
 def _realize(archetype: Dict[str, Any], rng: random.Random, overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -450,7 +454,7 @@ def _llm_narrate(deadline: Optional[float] = None) -> Optional[List[Dict[str, An
         )
         crew = Crew(agents=[narrator], tasks=[task], process=Process.sequential, verbose=False)
         with ThreadPoolExecutor(max_workers=1) as pool:
-            narration_deadline = 60 if deadline is None else max(10.0, deadline - _time.monotonic())
+            narration_deadline = 20 if deadline is None else min(20, max(10.0, deadline - _time.monotonic()))
             result = str(pool.submit(crew.kickoff).result(timeout=min(60, narration_deadline)))
         parsed = _parse_narration(result)
         lineup = _validate_narration(parsed)
@@ -658,7 +662,10 @@ def run_adversarial_drill(
             playbook = _sample_lineup(random.Random(seed) if seed is not None else random.Random())
             lineup_source = "sampled"
 
-    workers = min(3, len(playbook)) if use_llm else len(playbook)
+    # Two concurrent play crews max: the 512 MB free instance OOM'd with
+    # three LLM crews piling up (observed as empty-body 502/503 on the live
+    # site). One crew panics, the other still gets a whole narration window.
+    workers = min(2, len(playbook)) if use_llm else len(playbook)
     play_results: List[Dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(_execute_play, play, use_llm): play for play in playbook}
