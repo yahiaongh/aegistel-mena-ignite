@@ -194,25 +194,49 @@ def test_narration_validation_grounds_picks():
     assert mule["profile"]["transaction_type"] == "CROSS_BORDER_SWIFT"
 
 
-def test_drill_never_hangs_when_llm_exceeds_play_budget(monkeypatch):
-    """A play whose LLM crew grinds past the per-play budget must degrade to
-    the deterministic engine instead of dangling the drill."""
-    import time
+def test_drill_plays_use_deterministic_engine(monkeypatch):
+    """On the hosted 512 MB instance plays always run through the grounded
+    deterministic verdict engine: concurrent LLM crews OOM the worker (seen
+    live as empty-body 502/503), so the LLM touchpoint is lineup curation."""
+    modes = []
+
+    def fast_crew(profile, history, tools):
+        modes.append(profile.get("force_deterministic"))
+        return {"assessment": {"status": "APPROVED", "risk_score": "LOW"}, "used_fallback": True}
 
     monkeypatch.setattr("app.agents.drill_agent._llm_narrate", lambda deadline: None)
-    monkeypatch.setattr("app.agents.drill_agent._PLAY_LLM_BUDGET_S", 2)
+    monkeypatch.setattr("app.agents.drill_agent.run_specialist_crew", fast_crew)
+
+    report = run_adversarial_drill(use_llm=True, seed=9)
+    assert len(modes) == 6
+    assert all(mode is True for mode in modes)
+    assert report["total_plays"] == 6
+    assert all(p["used_fallback"] for p in report["plays"])
+
+
+def test_drill_wall_clock_prevents_hang(monkeypatch):
+    """The whole drill must finish inside ~_DRILL_WALL_CLOCK_S even when every
+    play's crew grinds: over-deadline plays degrade to a timed-out finding
+    instead of piling up engine work at the tail."""
+    import time
+
+    started = time.monotonic()
+    monkeypatch.setattr("app.agents.drill_agent._llm_narrate", lambda deadline: None)
+    monkeypatch.setattr("app.agents.drill_agent._DRILL_WALL_CLOCK_S", 1)
 
     def slow_crew(profile, history, tools):
-        if not profile.get("force_deterministic"):
-            time.sleep(5)
+        time.sleep(3)
         return {"assessment": {"status": "APPROVED", "risk_score": "LOW"}, "used_fallback": True}
 
     monkeypatch.setattr("app.agents.drill_agent.run_specialist_crew", slow_crew)
 
     report = run_adversarial_drill(use_llm=True, seed=9)
+    elapsed = time.monotonic() - started
+    # Deadline breach degrades every play to a timed-out finding (never a
+    # cumulative 6 x 3s wait). The bound is one lingering worker thread.
+    assert elapsed < 9
     assert report["total_plays"] == 6
     assert all(p["used_fallback"] for p in report["plays"])
-    assert all(p["outcome"] in {"CLEARED", "PARTIALLY_MISSED", "MISSED"} for p in report["plays"])
 
 
 def test_narration_validation_rejects_bad_lineups():

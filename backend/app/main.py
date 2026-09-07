@@ -364,7 +364,7 @@ async def audit_transaction_stream(request: AuditRequest):
 
 app.include_router(router)
 
-DRILL_TIMEOUT_SECONDS = 85
+DRILL_TIMEOUT_SECONDS = 60
 
 
 @router.post("/v1/drill/run")

@@ -327,23 +327,19 @@ _ARCHETYPES: List[Dict[str, Any]] = [
 _BLIND_SPOT_IDS = {"micro-staging", "mid-size-window", "congestion-medium-window"}
 _HEAVY_IDS = [a["id"] for a in _ARCHETYPES if a["threat_level"] in {"HIGH", "CRITICAL"}]
 
-# Wall-clock budget for a single LLM-run play: if the crew chain cannot finish
-# in time (rate limits, slow providers), the play degrades to the deterministic
-# engine instead of dangling the drill.
-_PLAY_LLM_BUDGET_S = 18
-
 # TOTAL wall-clock cap for a whole drill run, INCLUDING the Fraud Genie
 # narration. Hard evidence from the live site: Render's proxy kills any request
-# that exceeds ~90s (an empty-body 502 at 90.8s was observed), and a second
-# back-to-back LLM drill on the 512 MB free instance can blow the worker
-# entirely. So the whole drill MUST stay well under ~85s and keep peak memory
-# down (see workers below). Timeout budget: narration <= 20s, first play(s)
-# <= 18s each, the rest degrade to the fast deterministic engine. Since
-# asyncio.TimeoutError subclasses OSError on Python 3.11+, the endpoint also
-# catches TimeoutError explicitly and reports an honest 504 instead of a 502.
-# 75s here + endpoint cap of 85s keeps the request under the proxy ceiling
-# with slack for deterministic rescues.
-_DRILL_WALL_CLOCK_S = 75
+# that exceeds ~90s (empty-body 502s at 90.8s and 102s were observed), and a
+# second back-to-back LLM-heavy drill on the 512 MB free instance OOMs the
+# worker (empty-body 503s afterwards). Plays therefore always run through the
+# deterministic grounded verdict engine (the same path audits fall back to, and
+# the path the tests pin); the Fraud Genie LLM only curates the lineup (one
+# crew, <= 20s). Budget: narration <= 20s, then 6 bounded deterministic plays
+# at 2 workers -> ~15-25s. 50s here + endpoint cap of 60s keeps the request
+# well under the proxy ceiling with slack for the deterministic rescue path.
+# Since asyncio.TimeoutError subclasses OSError on Python 3.11+, the endpoint
+# also catches TimeoutError explicitly and reports an honest 504 instead of a 502.
+_DRILL_WALL_CLOCK_S = 50
 
 
 def _realize(archetype: Dict[str, Any], rng: random.Random, overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -636,6 +632,24 @@ def _execute_play(play: Dict[str, Any], use_llm: bool) -> Dict[str, Any]:
         }
 
 
+def _emergency_result(play: Dict[str, Any]) -> Dict[str, Any]:
+    threat = str(play.get("threat_level", "HIGH")).upper()
+    if threat not in THREAT_LEVELS:
+        threat = "HIGH"
+    return {
+        "id": play.get("id", "play-?"),
+        "name": play.get("name", "Unnamed play"),
+        "archetype": play.get("archetype", "unknown"),
+        "intent": play.get("intent", ""),
+        "threat_level": threat,
+        "verdict_status": "TIMED_OUT",
+        "defense_risk": "UNKNOWN",
+        "outcome": "ERROR",
+        "detected_via": [],
+        "used_fallback": True,
+    }
+
+
 def run_adversarial_drill(
     plays: Optional[List[Dict[str, Any]]] = None,
     use_llm: bool = True,
@@ -645,7 +659,11 @@ def run_adversarial_drill(
 
     The lineup is re-curated every run: the Fraud Genie LLM shapes it when a
     provider is available; otherwise a seeded sampler rotates scenarios. Plays
-    are independent and run concurrently (bounded worker pool).
+    are independent and run concurrently (bounded worker pool) through the
+    deterministic grounded verdict engine. Why not LLM-adjudicated plays on the
+    hosted instance: a second concurrent-LLM drill OOMs the 512 MB free worker
+    (observed twice live as empty-body 502/503). The Fraud Genie curation is
+    the single LLM touchpoint, capped at 20s.
     """
     curated_by_llm = False
     deadline = _time.monotonic() + _DRILL_WALL_CLOCK_S
@@ -662,31 +680,40 @@ def run_adversarial_drill(
             playbook = _sample_lineup(random.Random(seed) if seed is not None else random.Random())
             lineup_source = "sampled"
 
-    # Two concurrent play crews max: the 512 MB free instance OOM'd with
-    # three LLM crews piling up (observed as empty-body 502/503 on the live
-    # site). One crew panics, the other still gets a whole narration window.
-    workers = min(2, len(playbook)) if use_llm else len(playbook)
+    # Two concurrent play crews max: the 512 MB free instance OOM'd with LLM
+    # crews piling up (observed as empty-body 502/503 on the live site). Plays
+    # run through the deterministic engine now, so this is just a concurrency
+    # bound on the grounded ADJUDICATION path — memory-flat and fast.
+    workers = min(2, len(playbook))
     play_results: List[Dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(_execute_play, play, use_llm): play for play in playbook}
+        # Plays ALWAYS go through the grounded deterministic engine (see the
+        # module docstring: concurrent LLM crews OOM the free instance). The
+        # LLM touchpoint is the Fraud Genie lineup curation above only.
+        futures = {pool.submit(_execute_play, play, False): play for play in playbook}
         for future, play in futures.items():
             # Share ONE global deadline across all plays (and the narration):
             # each wait gets the SMALL remaining budget, so the whole drill can
-            # never outlive _DRILL_WALL_CLOCK_S. Previously every future got a
-            # fresh 45s, which could pile 6 x 45s = 270s past the endpoint cap.
+            # never outlive _DRILL_WALL_CLOCK_S.
             remaining = deadline - _time.monotonic()
-            budget = max(0.1, min(_PLAY_LLM_BUDGET_S, remaining))
+            budget = max(0.1, remaining)
             try:
                 play_results.append(future.result(timeout=budget))
             except FutureTimeoutError:
-                # The LLM chain is grinding against provider limits — never let
-                # the demo hang. Re-run this play through the deterministic
-                # engine (the same grounded verdict path the tests pin).
-                logger.warning("Drill play %s exceeded its %ss budget; re-running deterministically", play.get("id"), budget)
-                future.cancel()
-                rescued = _execute_play(play, use_llm=False)
-                rescued["used_fallback"] = True
-                play_results.append(rescued)
+                if remaining >= 4.0:
+                    # Wall-clock pressure with a little headroom left: run the
+                    # play through the grounded engine inline (fast, local).
+                    logger.warning("Drill play %s exceeded its budget; running inline", play.get("id"))
+                    future.cancel()
+                    play_results.append(_execute_play(play, False))
+                else:
+                    # Deadline breach — do NOT burn more wall clock on the
+                    # engine at the tail (that is what OOM-killed the worker
+                    # before). Mark the play as timed out; a timed-out play is
+                    # itself a finding, same as a crashed crew.
+                    logger.warning("Drill wall clock exhausted for play %s; marking timed-out", play.get("id"))
+                    future.cancel()
+                    play_results.append(_emergency_result(play))
     play_results.sort(key=lambda result: next((i for i, p in enumerate(playbook) if p["id"] == result["id"]), 0))
 
     outcomes = [play["outcome"] for play in play_results]
