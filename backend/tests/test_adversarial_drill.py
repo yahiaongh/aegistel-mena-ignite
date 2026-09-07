@@ -156,7 +156,7 @@ def test_invalid_threat_level_clamped():
 def test_narration_fallback_when_llm_unavailable(monkeypatch):
     """If the Fraud Genie cannot produce a lineup, the drill still runs on the
     rotating sampler — never a hard failure."""
-    monkeypatch.setattr("app.agents.drill_agent._llm_narrate", lambda: None)
+    monkeypatch.setattr("app.agents.drill_agent._llm_narrate", lambda deadline: None)
     monkeypatch.setattr(
         "app.agents.drill_agent.run_specialist_crew",
         lambda profile, history, tools: {"assessment": {"status": "APPROVED", "risk_score": "LOW"}, "used_fallback": True},
@@ -199,7 +199,7 @@ def test_drill_never_hangs_when_llm_exceeds_play_budget(monkeypatch):
     the deterministic engine instead of dangling the drill."""
     import time
 
-    monkeypatch.setattr("app.agents.drill_agent._llm_narrate", lambda: None)
+    monkeypatch.setattr("app.agents.drill_agent._llm_narrate", lambda deadline: None)
     monkeypatch.setattr("app.agents.drill_agent._PLAY_LLM_BUDGET_S", 2)
 
     def slow_crew(profile, history, tools):

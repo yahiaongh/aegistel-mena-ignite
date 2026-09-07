@@ -364,7 +364,7 @@ async def audit_transaction_stream(request: AuditRequest):
 
 app.include_router(router)
 
-DRILL_TIMEOUT_SECONDS = 180
+DRILL_TIMEOUT_SECONDS = 150
 
 
 @router.post("/v1/drill/run")
@@ -384,6 +384,13 @@ async def adversarial_drill_run(request: Optional[Dict[str, Any]] = None) -> Dic
         )
     except HTTPException as exc:
         return _audit_error_response(exc, exc.status_code)
+    except (TimeoutError, asyncio.TimeoutError) as exc:
+        # NOTE: on Python 3.11+ asyncio.TimeoutError subclasses OSError, so
+        # this must be caught BEFORE the (ConnectionError, OSError) handler —
+        # otherwise a drill that outlives its cap is mis-reported as a 502
+        # instead of an honest timeout.
+        logger.error("Adversarial drill timed out after %ss: %s", DRILL_TIMEOUT_SECONDS, exc)
+        return _audit_error_response(exc, 504)
     except Exception as exc:
         logger.error("Adversarial drill failed: %s\n%s", exc, traceback.format_exc())
         return _audit_error_response(exc, 502)

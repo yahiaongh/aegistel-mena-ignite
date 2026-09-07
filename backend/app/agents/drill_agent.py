@@ -17,6 +17,7 @@ import json
 import logging
 import random
 import re
+import time as _time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -328,10 +329,17 @@ _HEAVY_IDS = [a["id"] for a in _ARCHETYPES if a["threat_level"] in {"HIGH", "CRI
 
 # Wall-clock budget for a single LLM-run play: if the crew chain cannot finish
 # in time (rate limits, slow providers), the play degrades to the deterministic
-# engine instead of dangling the drill. Budget math: narration <= 60s, then
-# 6 plays / 3 workers x 45s = 90s -> worst case ~150s, under the endpoint
-# (180s) and dev proxy (300s) ceilings.
+# engine instead of dangling the drill.
 _PLAY_LLM_BUDGET_S = 45
+
+# TOTAL wall-clock cap for a whole drill run, INCLUDING the Fraud Genie
+# narration. This is the guard against the 502s we saw: the wait loop below
+# used to give each future its own full 45s sequentially (6 x 45s can exceed
+# the 180s endpoint cap), and because asyncio.TimeoutError subclasses OSError
+# on Python 3.11+, the endpoint then mis-reported the timeout as a 502.
+# 120s here + endpoint cap of 150s keeps the drill comfortably inside the cap
+# with slack for the deterministic rescue path.
+_DRILL_WALL_CLOCK_S = 120
 
 
 def _realize(archetype: Dict[str, Any], rng: random.Random, overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -404,7 +412,7 @@ Reply with JSON ONLY (no prose, no markdown fences):
 {"lineup": [{"id": "...", "name": "...", "intent": "...", "amount": 12345.67, "transaction_type": "...", "region": [lon, lat]}, ...]}"""
 
 
-def _llm_narrate() -> Optional[List[Dict[str, Any]]]:
+def _llm_narrate(deadline: Optional[float] = None) -> Optional[List[Dict[str, Any]]]:
     model = next(
         (m for m in MODEL_CHAIN["specialist"] if _model_provider_available(m) and not _model_in_cooldown(m)),
         None,
@@ -442,7 +450,8 @@ def _llm_narrate() -> Optional[List[Dict[str, Any]]]:
         )
         crew = Crew(agents=[narrator], tasks=[task], process=Process.sequential, verbose=False)
         with ThreadPoolExecutor(max_workers=1) as pool:
-            result = str(pool.submit(crew.kickoff).result(timeout=60))
+            narration_deadline = 60 if deadline is None else max(10.0, deadline - _time.monotonic())
+            result = str(pool.submit(crew.kickoff).result(timeout=min(60, narration_deadline)))
         parsed = _parse_narration(result)
         lineup = _validate_narration(parsed)
         if lineup is None:
@@ -635,11 +644,12 @@ def run_adversarial_drill(
     are independent and run concurrently (bounded worker pool).
     """
     curated_by_llm = False
+    deadline = _time.monotonic() + _DRILL_WALL_CLOCK_S
     if plays is not None:
         playbook = plays
         lineup_source = "custom"
     else:
-        narrated = _llm_narrate() if use_llm else None
+        narrated = _llm_narrate(deadline) if use_llm else None
         if narrated is not None:
             playbook = narrated
             curated_by_llm = True
@@ -653,13 +663,19 @@ def run_adversarial_drill(
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(_execute_play, play, use_llm): play for play in playbook}
         for future, play in futures.items():
+            # Share ONE global deadline across all plays (and the narration):
+            # each wait gets the SMALL remaining budget, so the whole drill can
+            # never outlive _DRILL_WALL_CLOCK_S. Previously every future got a
+            # fresh 45s, which could pile 6 x 45s = 270s past the endpoint cap.
+            remaining = deadline - _time.monotonic()
+            budget = max(0.1, min(_PLAY_LLM_BUDGET_S, remaining))
             try:
-                play_results.append(future.result(timeout=_PLAY_LLM_BUDGET_S if use_llm else None))
+                play_results.append(future.result(timeout=budget))
             except FutureTimeoutError:
                 # The LLM chain is grinding against provider limits — never let
                 # the demo hang. Re-run this play through the deterministic
                 # engine (the same grounded verdict path the tests pin).
-                logger.warning("Drill play %s exceeded the %ss LLM budget; re-running deterministically", play.get("id"), _PLAY_LLM_BUDGET_S)
+                logger.warning("Drill play %s exceeded its %ss budget; re-running deterministically", play.get("id"), budget)
                 future.cancel()
                 rescued = _execute_play(play, use_llm=False)
                 rescued["used_fallback"] = True
