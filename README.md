@@ -251,7 +251,7 @@ flowchart LR
     end
 
     subgraph DEF["Defense side"]
-        RUN["Replay each play through<br/>the live crew"]
+        RUN["Replay each play through<br/>the grounded verdict engine"]
         GRADE["Grade defense: 0–100 + A–F<br/>outcome chips + blind spots"]
     end
 
