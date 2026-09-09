@@ -134,11 +134,13 @@ touches a live model or the telecom SDK:
   so nothing can wedge on a hung or rate-limited upstream).
 - mem0's live LLM/embedding extraction is disabled, so memory writes land only
   in a scratch store redirected via `AEGISTEL_MEMORY_PATH`.
+- Visitor feedback writes are likewise redirected off the live store via
+  `AEGISTEL_FEEDBACK_PATH` (tests never pollute or delete `data/feedback.jsonl`).
 - Provider cooldowns are reset between tests.
 
 ```bash
 cd backend
-../venv/bin/python -m pytest tests/ -q     # 89 offline tests + 1 opt-in live test
+../venv/bin/python -m pytest tests/ -q     # 98 offline tests + 1 opt-in live test
 
 # Opt-in live behavioral eval (needs real model keys; LLM-vs-deterministic gate):
 ../venv/bin/python -m pytest tests/test_behavioral_eval.py --run-live

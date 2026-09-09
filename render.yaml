@@ -34,3 +34,5 @@ services:
         sync: false
       - key: DEEPGRAM_API_KEY
         sync: false
+      - key: AEGISTEL_ADMIN_KEY
+        sync: false

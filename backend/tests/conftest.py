@@ -29,6 +29,11 @@ def pytest_configure(config):
 _TEST_MEMORY_PATH = Path(tempfile.mkdtemp(prefix="aegistel-test-memory-")) / "local_memory.jsonl"
 os.environ["AEGISTEL_MEMORY_PATH"] = str(_TEST_MEMORY_PATH)
 
+# Same protection for the visitor feedback store (backend/data/feedback.jsonl).
+# Tests must never leak demo feedback into (or read rubbish from) the live store.
+TEST_FEEDBACK_PATH = Path(tempfile.mkdtemp(prefix="aegistel-test-feedback-")) / "feedback.jsonl"
+os.environ["AEGISTEL_FEEDBACK_PATH"] = str(TEST_FEEDBACK_PATH)
+
 
 @pytest.fixture(autouse=True)
 def force_deterministic_offline(request, monkeypatch):

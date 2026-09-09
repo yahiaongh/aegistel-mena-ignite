@@ -42,6 +42,7 @@ import {
   Radar,
 } from "recharts";
 import AuditFlowDiagram, { type FlowState, type FlowTool } from "./components/AuditFlowDiagram";
+import FeedbackWidget from "./components/FeedbackWidget";
 
 interface ToolResult {
   name: string;
@@ -1547,6 +1548,13 @@ export default function AegisTelDashboard() {
           </div>
         </div>
       </div>
+      <FeedbackWidget
+        apiBase={apiBase}
+        msisdn={msisdn}
+        lastStatus={auditResult?.status ?? null}
+        lastRisk={auditResult?.risk_score ?? null}
+        drillGrade={drillResult ? `${drillResult.grade} (${drillResult.readiness_score})` : null}
+      />
     </div>
   );
 }

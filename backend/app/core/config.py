@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     DEEPGRAM_API_KEY: str = ""
     OPENAI_API_KEY: str = ""
     HF_TOKEN: str = ""
+    AEGISTEL_ADMIN_KEY: str = ""
     LITELLM_DROP_PARAMS: bool = True
     APP_ENV: str = "development"
     PORT: int = 8000

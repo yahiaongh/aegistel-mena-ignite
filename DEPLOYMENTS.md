@@ -87,7 +87,9 @@ web service with `runtime: docker`, `dockerfilePath: ./Dockerfile.hf`,
 3. Render reads `render.yaml`, prompts for each `sync: false` env var — paste
    the values from your root `.env` (`GROQ_API_KEY`, `GOOGLE_API_KEY`,
    `QDRANT_URL`, `QDRANT_API_KEY`, and optionally `OPENROUTER_API_KEY`,
-   `NOKIA_NAC_API_KEY`, `DEEPGRAM_API_KEY`). → Apply.
+   `NOKIA_NAC_API_KEY`, `DEEPGRAM_API_KEY`). For the feedback readback,
+   `AEGISTEL_ADMIN_KEY` must be a strong random string (pick one; the Ops tab
+   on the demo asks visitors for this passcode). → Apply.
 4. First build takes ~10–15 min (it builds the Next.js + Python image); then
    the service is live. Public URL: `https://aegistel.onrender.com`.
 
@@ -96,7 +98,9 @@ web service with `runtime: docker`, `dockerfilePath: ./Dockerfile.hf`,
 > bandwidth or instance hours, services are **suspended** (never billed) until
 > the next reset — no surprise charges. The filesystem is ephemeral: use the
 > QDRANT keys for durable audit-history/memory, which is the same persistence
-> model as the demo.
+> model as the demo. The feedback store (`data/feedback.jsonl`) is also on that
+> ephemeral disk — export it via the Ops tab before a rebuild; a durable store
+> is a clear follow-up if feedback volume grows.
 
 ### 4.2 Keep it warm (never spin down → instant load)
 

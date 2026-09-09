@@ -8,6 +8,7 @@ import collections
 import io
 import json
 import logging
+import secrets
 import threading
 import time
 import traceback
@@ -15,7 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from dotenv import load_dotenv
-from fastapi import APIRouter, FastAPI, Form, HTTPException
+from fastapi import APIRouter, FastAPI, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -29,6 +30,7 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env")
 
 from app.agents.graph_orchestrator import execute_audit
 from app.agents.memory_agent import memory_engine
+from app.feedback_store import build_summary, list_feedback, sanitize_ratings, submit_feedback
 from app.schemas.telemetry import AuditRequest, AuditResponse
 
 try:
@@ -234,6 +236,66 @@ async def clear_all_memory():
             raise HTTPException(status_code=500, detail=f"Memory clear error: {exc}") from exc
     memory_engine._local_store = []
     return {"status": "success", "message": "All local memory cleared"}
+
+
+def _resolve_admin_token(request: Request) -> str:
+    """Accept the admin token as Bearer, X-Admin-Token header, or ?token=."""
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return request.headers.get("x-admin-token", "") or request.query_params.get("token", "")
+
+
+@router.post("/feedback", status_code=201)
+async def submit_feedback_endpoint(request: Request) -> Dict[str, Any]:
+    """Public feedback collection for judges, operators and demo visitors.
+
+    Accepts independent 1-5 star ratings per feature (at least one is required),
+    a quick emoji mood, an optional role, and optional free-text. Context about
+    the current demo run (last MSISDN + verdict) is attached by the client.
+    """
+    try:
+        payload: Dict[str, Any] = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON body: {exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="Feedback payload must be a JSON object.")
+
+    ratings = sanitize_ratings(payload.get("ratings"))
+    if not ratings:
+        raise HTTPException(status_code=422, detail="At least one feature rating (1-5 stars) is required.")
+
+    client_host = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent", "")[:300]
+    meta = {"client_ip": client_host, "user_agent": user_agent}
+
+    record = submit_feedback(payload, meta=meta)
+    return {
+        "ok": True,
+        "id": record["id"],
+        "thank_you": "Logged. Every stroke helps the build.",
+        "ratings": record["ratings"],
+    }
+
+
+@router.get("/feedback")
+async def read_feedback(request: Request, limit: int = 200) -> Dict[str, Any]:
+    """Founder-only readback: per-feature averages, mood/role tallies, latest notes."""
+    if not settings.AEGISTEL_ADMIN_KEY:
+        return JSONResponse(status_code=503, content={"detail": "Feedback admin key is not configured on this server."})
+    supplied = _resolve_admin_token(request)
+    if not supplied or not secrets.compare_digest(supplied, settings.AEGISTEL_ADMIN_KEY):
+        return JSONResponse(status_code=401, content={"detail": "Invalid or missing feedback admin token."})
+    try:
+        limit_value = max(1, min(int(limit), 500))
+    except (TypeError, ValueError):
+        limit_value = 200
+    records = list_feedback(limit_value)
+    return {
+        "summary": build_summary(list_feedback(5000)),
+        "latest": records,
+    }
 
 
 @router.post("/audio/tts")
