@@ -115,7 +115,7 @@ def test_plan_event_shows_plan_and_only_planned_tools_run():
     progress_types = [payload.get("type") for name, payload in frames if name == "progress"]
     assert "plan" in progress_types
     plan = next(payload for name, payload in frames if name == "progress" and payload.get("type") == "plan")
-    assert set(plan["deferred"]) == {"check_roaming_status", "get_congestion_insights"}
+    assert set(plan["deferred"]) == {"check_roaming_status", "check_device_swap", "check_number_recycling", "get_congestion_insights", "check_kyc_tenure"}
     assert "check_roaming_status" not in plan["required"]
 
     # A clean low-value convenience flow stays on its initial plan: no
@@ -124,6 +124,9 @@ def test_plan_event_shows_plan_and_only_planned_tools_run():
     tool_names = [payload["tool"] for name, payload in frames if name == "progress" and payload.get("type") == "tool:done"]
     assert "check_roaming_status" not in tool_names
     assert "get_congestion_insights" not in tool_names
+    assert "check_device_swap" not in tool_names
+    assert "check_number_recycling" not in tool_names
+    assert "check_kyc_tenure" not in tool_names
     assert "check_sim_swap" in tool_names
     assert "verify_number" in tool_names
     assert "create_qod_session" not in tool_names

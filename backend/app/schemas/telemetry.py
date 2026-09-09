@@ -107,6 +107,7 @@ class AgentTraceItem(BaseModel):
 
 
 class NokiaApiTelemetry(BaseModel):
+    device_swap_detected: Optional[bool] = None
     number_verification_match: Optional[bool] = None
     number_verification_status: str = "UNKNOWN"
     max_congestion_level: Optional[str] = None

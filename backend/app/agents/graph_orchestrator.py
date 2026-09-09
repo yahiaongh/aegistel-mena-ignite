@@ -298,6 +298,10 @@ async def execute_audit(request: AuditRequest, progress_callback: Any | None = N
             bucket = "local_fallback"
         evidence_summary[bucket] += 1
     telemetry = NokiaApiTelemetry(
+        device_swap_detected=next(
+            (item.get("deviceSwapped") for item in tool_results if item.get("deviceSwapped") is not None),
+            None,
+        ),
         sim_swap_detected=assessment.sim_swap_detected,
         last_sim_swap_date=assessment.last_sim_swap_date,
         location_verification_match=assessment.location_verification_match,

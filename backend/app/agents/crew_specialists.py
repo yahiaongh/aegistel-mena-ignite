@@ -16,7 +16,12 @@ Crew = None
 Task = None
 
 from app.agents.tools import (
+    check_call_forwarding,
     check_device_reachability,
+    check_device_swap,
+    check_kyc_match,
+    check_kyc_tenure,
+    check_number_recycling,
     check_roaming_status,
     check_sim_swap,
     get_congestion_insights,
@@ -102,17 +107,34 @@ HIGH_RISK_TX_TYPES = {"CROSS_BORDER_SWIFT", "SAME_DAY_WIRE", "GIFT_CARD_TOPUP"}
 # pool is a fixed whitelist, so the planner is bounded and cannot invent tools.
 SIGNAL_TOOL_NAMES: Dict[str, str] = {
     "sim": "check_sim_swap",
+    "device_swap": "check_device_swap",
+    "call_forwarding": "check_call_forwarding",
+    "number_recycling": "check_number_recycling",
     "number_verification": "verify_number",
     "location": "verify_location",
     "roaming": "check_roaming_status",
     "reachability": "check_device_reachability",
     "congestion": "get_congestion_insights",
+    "kyc_tenure": "check_kyc_tenure",
+    "kyc_match": "check_kyc_match",
 }
 TOOL_SIGNAL_KEY: Dict[str, str] = {v: k for k, v in SIGNAL_TOOL_NAMES.items()}
 
 # Core identity line-integrity signals every transaction needs.
-_CORE_TOOLS = ["check_sim_swap", "verify_number", "verify_location", "check_device_reachability"]
-_REFERENCE_TOOLS = ["check_roaming_status", "get_congestion_insights"]
+_CORE_TOOLS = [
+    "check_sim_swap",
+    "verify_number",
+    "verify_location",
+    "check_device_reachability",
+    "check_call_forwarding",
+]
+_REFERENCE_TOOLS = [
+    "check_roaming_status",
+    "check_device_swap",
+    "check_number_recycling",
+    "get_congestion_insights",
+    "check_kyc_tenure",
+]
 
 # Convenience / low-touch flows: identity + geo + reachability suffice; roaming
 # and congestion are deferred unless the risk scan or value demands them.
@@ -147,17 +169,20 @@ def plan_tool_calls(request_context: Dict[str, Any]) -> Dict[str, Any]:
         deferred = list(_REFERENCE_TOOLS)
         rationale = (
             f"Low-touch {transaction_type or 'payment'} flow: decisive evidence is device identity "
-            "and line integrity (SIM swap status, silent number binding, geo presence, reachability). "
-            "Roaming and congestion are deferred; they are pulled in only if the first risk scan or "
-            "the transaction value justifies a deeper inspection pass."
+            "and line integrity (SIM swap status, call forwarding, silent number binding, geo presence, "
+            "reachability). Roaming, device swap, number recycling, congestion, and subscriber tenure "
+            "are deferred; they are pulled in only if the first risk scan or the transaction value "
+            "justifies a deeper inspection pass."
         )
     else:
         required = list(_CORE_TOOLS) + ["check_roaming_status"]
-        deferred = ["get_congestion_insights"]
+        deferred = ["check_device_swap", "check_number_recycling", "get_congestion_insights", "check_kyc_tenure"]
         rationale = (
             f"Value-movement {transaction_type or 'payment'} flow: identity, geo presence, roaming "
-            "and reachability are required evidence for settlement. Congestion is deferred as a "
-            "secondary contextual signal and pulled in only when the risk scan or value warrants it."
+            "and reachability are required evidence for settlement. Device swap, number recycling, "
+            "congestion, and subscriber tenure are deferred as secondary contextual signals and "
+            "pulled in only when the risk scan or value warrants it. KYC Match is available for "
+            "onboarding and identity verification flows."
         )
 
     return {
@@ -252,6 +277,7 @@ def synthesize_specialist_assessment(
     required_signal_keys = set(required_signals or DEFAULT_REQUIRED_SIGNALS)
 
     sim_result = _find_tool_result(tool_results, "swapped")
+    device_swap_result = _find_tool_result(tool_results, "deviceSwapped")
     location_result = _find_tool_result(tool_results, "verificationResult")
     roaming_result = _find_tool_result(tool_results, "roamingStatus")
     reachability_result = _find_tool_result(tool_results, "reachabilityStatus", "reachable")
@@ -268,6 +294,7 @@ def synthesize_specialist_assessment(
     )
 
     sim_swapped = bool(sim_result and sim_result.get("swapped"))
+    device_swapped = bool(device_swap_result and device_swap_result.get("deviceSwapped"))
     number_verified = None
     if number_verification_result is not None:
         verified_value = number_verification_result.get("verified")
@@ -351,6 +378,21 @@ def synthesize_specialist_assessment(
             "detail": f"swapped={sim_swapped} | source={sim_result.get('source', 'unknown') if sim_result else 'absent'}",
         }
     )
+
+    if device_swap_result is not None:
+        trace_items.append(
+            {
+                "agent": "Device Integrity Specialist",
+                "action": "DEVICE_SWAP_EVALUATION",
+                "thought": (
+                    f"A recent handset swap was detected for {msisdn}."
+                    if device_swapped
+                    else f"No recent handset swap was detected for {msisdn}."
+                ),
+                "status": "FLAGGED" if device_swapped else "CLEARED",
+                "detail": f"deviceSwapped={device_swapped} | source={device_swap_result.get('source', 'unknown')}",
+            }
+        )
 
     network_thought = (
         "Network Intelligence Specialist found a location verification mismatch."
@@ -437,6 +479,7 @@ def synthesize_specialist_assessment(
 
     risk_signal = (
         sim_swapped
+        or device_swapped
         or (sim_unknown and "sim" in required_signal_keys)
         or verification_result in {"FALSE", "PARTIAL", "UNKNOWN"}
         or (roaming_expected and roaming_status == "INTERNATIONAL_ROAMING")
@@ -517,6 +560,8 @@ def synthesize_specialist_assessment(
         parts = []
         if sim_swapped:
             parts.append("SIM swap evidence was present.")
+        if device_swapped:
+            parts.append("Recent handset-swap evidence was present.")
         if number_verification_risk:
             parts.append(
                 f"Number Verification returned {number_verification_status} for the presented MSISDN, "
@@ -1240,6 +1285,8 @@ def run_specialist_crew(
     def _build_job(name: str) -> tuple[str, Any]:
         if name == "check_sim_swap":
             return (name, lambda: _run_tool_payload("check_sim_swap", check_sim_swap, msisdn=msisdn))
+        if name == "check_device_swap":
+            return (name, lambda: _run_tool_payload("check_device_swap", check_device_swap, msisdn=msisdn))
         if name == "verify_location":
             return (
                 name,
@@ -1260,6 +1307,14 @@ def run_specialist_crew(
             return (name, lambda: _run_tool_payload("verify_number", verify_number, msisdn=msisdn))
         if name == "get_congestion_insights":
             return (name, lambda: _run_tool_payload("get_congestion_insights", get_congestion_insights, msisdn=msisdn))
+        if name == "check_call_forwarding":
+            return (name, lambda: _run_tool_payload("check_call_forwarding", check_call_forwarding, msisdn=msisdn))
+        if name == "check_number_recycling":
+            return (name, lambda: _run_tool_payload("check_number_recycling", check_number_recycling, msisdn=msisdn))
+        if name == "check_kyc_tenure":
+            return (name, lambda: _run_tool_payload("check_kyc_tenure", check_kyc_tenure, msisdn=msisdn))
+        if name == "check_kyc_match":
+            return (name, lambda: _run_tool_payload("check_kyc_match", check_kyc_match, msisdn=msisdn))
         raise ValueError(f"Unknown planned tool {name}")
 
     def _run_tools(jobs: List[tuple[str, Any]]) -> List[Dict[str, Any]]:

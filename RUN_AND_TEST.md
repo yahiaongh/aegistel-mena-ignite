@@ -38,7 +38,7 @@ judge/reviewer creates their own before running. The backend loads keys from a
 | `GROQ_API_KEY` | https://console.groq.com — API Keys | Primary LLM (specialist + auditor + memory) | **Yes** (one of GROQ/OpenRouter/Gemini) |
 | `GOOGLE_API_KEY` | https://aistudio.google.com/apikey (create a key with the Generative Language API) | LLM + (remote-only) memory embeddings/extraction | **Yes** (LLM for memory/crew; remote memory features need `AEGISTEL_LIVE_MEMORY=1`) |
 | `QDRANT_API_KEY` + `QDRANT_URL` | https://qdrant.tech — create/host a cluster, copy its API key & URL | Optional remote vector store for memory context | No — memory defaults to a local JSONL store; Qdrant is used only when `AEGISTEL_LIVE_MEMORY=1` |
-| `NOKIA_NAC_API_KEY` | Nokia Network-as-Code on RapidAPI (host `network-as-code.nokia.rapidapi.com`) | The 7 CAMARA telecom checks | No — falls back to sandbox signals |
+| `NOKIA_NAC_API_KEY` | Nokia Network-as-Code on RapidAPI (host `network-as-code.nokia.rapidapi.com`) | The 8 CAMARA telecom checks | No — falls back to sandbox signals |
 | `OPENROUTER_API_KEY` | https://openrouter.ai/keys | LLM fallback tier | Optional |
 | `OPENAI_API_KEY` / `CEREBRAS_API_KEY` | platform providers | LLM fallback tiers | Optional |
 | `DEEPGRAM_API_KEY` | https://deepgram.com | Neural TTS | Optional — if unset, `/api/audio/tts` fails closed (`503` + hint) and the dashboard uses the browser's local speech |
@@ -180,7 +180,7 @@ with `AEGISTEL_LIVE_MEMORY=1` — and TTS verification).
 ## Quick health + smoke checks
 
 ```bash
-# backend alive (expect active_tool_count=7 on a configured instance)
+# backend alive (expect active_tool_count=8 on a configured instance)
 curl -s <BASE_URL>/api/health
 
 # deterministic audit (no LLM quota; fast)

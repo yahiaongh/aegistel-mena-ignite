@@ -205,15 +205,15 @@ def test_plan_tool_calls_selective_by_transaction_type():
     light = plan_tool_calls({"transaction_type": "P2P_TRANSFER", "amount": 100.0})
     assert light["low_touch"] is True
     assert set(light["required"]) == {
-        "check_sim_swap", "verify_number", "verify_location", "check_device_reachability"
+        "check_sim_swap", "verify_number", "verify_location", "check_device_reachability", "check_call_forwarding"
     }
-    assert set(light["deferred"]) == {"check_roaming_status", "get_congestion_insights"}
+    assert set(light["deferred"]) == {"check_roaming_status", "check_device_swap", "check_number_recycling", "get_congestion_insights", "check_kyc_tenure"}
     assert light["rationale"]
 
     wire = plan_tool_calls({"transaction_type": "WIRE_TRANSFER", "amount": 100.0})
     assert wire["low_touch"] is False
     assert "check_roaming_status" in wire["required"]
-    assert wire["deferred"] == ["get_congestion_insights"]
+    assert set(wire["deferred"]) == {"check_device_swap", "check_number_recycling", "get_congestion_insights", "check_kyc_tenure"}
 
 
 def test_crewai_planner_can_select_only_policy_deferred_tools(monkeypatch):
@@ -246,7 +246,7 @@ def test_crewai_planner_can_select_only_policy_deferred_tools(monkeypatch):
 
     assert plan["planning_mode"] == "crewai"
     assert plan["initial_optional"] == ["check_roaming_status"]
-    assert plan["deferred"] == ["get_congestion_insights"]
+    assert set(plan["deferred"]) == {"check_device_swap", "check_number_recycling", "get_congestion_insights", "check_kyc_tenure"}
     assert set(plan["required"]) == set(policy["required"])
 
 

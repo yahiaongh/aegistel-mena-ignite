@@ -21,8 +21,8 @@ service driven by a LangGraph streaming wrapper: a **bounded planner** selects t
 CAMARA signals the transaction actually needs, then executes **seven CAMARA
 integrations through the Nokia NaC sandbox** (SDK → REST → documented sandbox
 fallback, each result stamped with its real source; a 401 or unknown number
-degrades provenance, never the verdict: SIM swap, number verification, location,
-roaming, reachability, congestion insights, and QoD). The evidence fuses with a
+degrades provenance, never the verdict: SIM swap, device swap, number verification,
+location, roaming, reachability, congestion insights, and QoD). The evidence fuses with a
 deterministic rule engine, a **CrewAI specialist crew** may refine
 the verdict (made stricter only when warranted), and it returns a grounded
 decision with a full evidence trail — blocked or stepped-up before settlement
@@ -124,14 +124,15 @@ flowchart LR
     end
 
     subgraph EVID["Evidence (parallel)"]
-        subgraph TOOLS["7 CAMARA tool catalog — NaC SDK → REST → sandbox (per-signal provenance)"]
+        subgraph TOOLS["8 CAMARA tool catalog — NaC SDK → REST → sandbox (per-signal provenance)"]
             T1["SIM swap"]
-            T2["Location"]
-            T3["Roaming"]
-            T4["Reachability"]
-            T5["Number verify"]
-            T6["Congestion"]
-            T7["QoD"]
+            T2["Device swap"]
+            T3["Location"]
+            T4["Roaming"]
+            T5["Reachability"]
+            T6["Number verify"]
+            T7["Congestion"]
+            T8["QoD"]
         end
         DET["Deterministic synthesis<br/>grounded verdict + recommended action"]
     end
@@ -162,7 +163,7 @@ to collect early from a strict allowlist. When no approved provider is available
 the trace explicitly shows the policy fallback. `crew_specialists.plan_tool_calls`
 defines the non-negotiable safety envelope per transaction type, while the agent
 planner cannot remove a required check or invent an API call. The policy marks a
-bounded subset of the seven-tool catalog as **required** signals and defers the
+bounded subset of the eight-tool catalog as **required** signals and defers the
 rest as **optional** evidence pulled in only when the first risk scan, the
 transaction value, or incident history justifies a deeper pass. The selected
 tools run as `asyncio` calls that execute **concurrently** and rejoin before the
@@ -313,7 +314,7 @@ location, roaming, QoD step-up) — the same drama the `otp-sim-swap` /
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| `GET` | `/api/health` | Liveness + count of active tools (`active_tool_count: 7`) |
+| `GET` | `/api/health` | Liveness + count of active tools (`active_tool_count: 8`) |
 | `POST` | `/api/v1/audit` | One-shot audit → `AuditResponse` |
 | `POST` | `/api/v1/audit/stream` | SSE pipeline progress → verdict |
 | `GET` | `/api/v1/history/{msisdn}` | Recorded audit history for a number |
@@ -324,7 +325,7 @@ location, roaming, QoD step-up) — the same drama the `otp-sim-swap` /
 | `GET` | `/api/feedback` | Founder-only readback (needs `AEGISTEL_ADMIN_KEY`; 401/503 otherwise) |
 | `POST` | `/api/copilot/chat` | Copilot Q&A over the platform FAQ (`enhance: true` adds LLM polish) |
 
-`GET /api/health` returns `"active_tool_count": 7` on a configured instance;
+`GET /api/health` returns `"active_tool_count": 8` on a configured instance;
 dashboards repoll it every 20s.
 
 ---
@@ -336,7 +337,7 @@ aegistel-mena-ignite/
 ├── backend/
 │   ├── app/
 │   │   ├── agents/
-│   │   │   ├── tools.py               # 7 CAMARA tools + SDK/REST/sandbox fallback
+│   │   │   ├── tools.py               # 8 CAMARA tools + SDK/REST/sandbox fallback
 │   │   │   ├── crew_specialists.py    # CrewAI crew + deterministic engine + reconcile
 │   │   │   ├── graph_orchestrator.py  # LangGraph orchestration (execute_audit)
 │   │   │   ├── drill_agent.py         # Adversarial Drill attacker/defender
@@ -409,7 +410,7 @@ cd backend && ../venv/bin/python -m pytest tests/test_behavioral_eval.py --run-l
   the live behavioral eval with `pytest tests/test_behavioral_eval.py --run-live`.
 - **Frontend:** typecheck + lint clean.
 - **Judge-path simulation:** `docker compose up --build -d` boots both services;
-  an audit via the frontend proxy returns HTTP 200 with all 7 tools and a grounded
+  an audit via the frontend proxy returns HTTP 200 with all 8 tools and a grounded
   verdict. Local, `Dockerfile.hf`, and Render all reach the backend through the
   same `AEGISTEL_BACKEND_URL` wiring.
 - **Live LLM E2E (verified):** real audit completed with `used_fallback: false`,

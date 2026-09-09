@@ -207,6 +207,7 @@ def _count_active_tools() -> int:
 
         tools_mod = importlib.import_module("app.agents.tools")
         tool_names = [
+            "check_device_swap",
             "check_device_reachability",
             "check_roaming_status",
             "check_sim_swap",
