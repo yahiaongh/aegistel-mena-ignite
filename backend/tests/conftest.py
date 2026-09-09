@@ -9,6 +9,13 @@ from dotenv import load_dotenv
 ROOT_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 load_dotenv(dotenv_path=ROOT_ENV_FILE, override=False)
 
+# Test determinism: keep LiteLLM from ever dialing out for its remote model-price
+# map (it would hang/DNS-fail on a sandboxed runner), and never auto-build remote
+# memory clients. Both must be explicit, not the default.
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+os.environ.setdefault("LITELLM_LOG", "ERROR")
+os.environ.setdefault("AEGISTEL_LIVE_MEMORY", "0")
+
 
 def pytest_addoption(parser):
     parser.addoption(

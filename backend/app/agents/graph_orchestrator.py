@@ -103,6 +103,7 @@ async def crew_node(state: AuditState) -> Dict[str, Any]:
         state.get("memory_context", []),
         state.get("tool_results", []),
         state.get("progress_callback"),
+        llm_time_budget_s=float(state.get("llm_budget_s", 14.0)),
     )
     assessment = FinalAssessment(**specialist_output["assessment"])
     return {
@@ -188,6 +189,7 @@ async def execute_audit(request: AuditRequest, progress_callback: Any | None = N
         "request_context": request_context,
         "specialist_output": {},
         "progress_callback": progress_callback,
+        "llm_budget_s": 14.0,
     }
     final_state = await aegis_graph.ainvoke(initial_input)
     timing["crew_ms"] = round((time.monotonic() - t0) * 1000, 1) - timing["memory_retrieve_ms"]
@@ -220,6 +222,20 @@ async def execute_audit(request: AuditRequest, progress_callback: Any | None = N
         trace.extend(specialist_trace)
 
     tool_results = final_state.get("tool_results", [])
+    evidence_summary = {"live_sdk": 0, "sandbox": 0, "local_fallback": 0}
+    for item in tool_results:
+        source = str(item.get("source", "")).strip().lower()
+        if item.get("error"):
+            bucket = "local_fallback"
+        elif source == "nokia nac sdk":
+            bucket = "live_sdk"
+        elif source in {"local fallback", "local_fallback"}:
+            bucket = "local_fallback"
+        elif "sandbox" in source or "simulator" in source:
+            bucket = "sandbox"
+        else:
+            bucket = "local_fallback"
+        evidence_summary[bucket] += 1
     telemetry = NokiaApiTelemetry(
         sim_swap_detected=assessment.sim_swap_detected,
         last_sim_swap_date=assessment.last_sim_swap_date,
@@ -250,6 +266,7 @@ async def execute_audit(request: AuditRequest, progress_callback: Any | None = N
         ),
         confidence=_compute_confidence(tool_results),
         cross_border_risk=assessment.roaming_status == "INTERNATIONAL_ROAMING",
+        evidence_summary=evidence_summary,
     )
     memory_engine.record_incident(
         request.msisdn,

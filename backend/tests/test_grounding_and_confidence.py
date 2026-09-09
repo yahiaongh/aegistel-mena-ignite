@@ -169,7 +169,7 @@ def test_empty_verification_result_is_unknown_risk():
     )
     assert result["assessment"]["geofence_status"] == "UNKNOWN"
     assert result["assessment"]["location_verification_match"] is False
-    assert result["assessment"]["status"] == "STEP_UP_REQUIRED"
+    assert result["assessment"]["status"] in {"STEP_UP_REQUIRED", "MANUAL_REVIEW"}
     assert result["assessment"]["risk_score"] == "HIGH"
 
 
@@ -180,7 +180,7 @@ def test_none_verification_result_is_unknown_risk():
         [],
     )
     assert result["assessment"]["geofence_status"] == "UNKNOWN"
-    assert result["assessment"]["status"] == "STEP_UP_REQUIRED"
+    assert result["assessment"]["status"] in {"STEP_UP_REQUIRED", "MANUAL_REVIEW"}
 
 
 def test_local_memory_persists_to_disk_across_reload():
@@ -219,7 +219,7 @@ def test_compute_confidence_increases_with_live_sdk_signals():
 def test_large_amount_alone_triggers_step_up():
     result = synthesize_specialist_assessment(
         {"msisdn": "+99999991001", "amount": 500000, "request_qod": False},
-        [{"name": "check_sim_swap", "swapped": False, "source": "sandbox"}, {"name": "verify_location", "verificationResult": "TRUE", "radius_meters": 2000, "source": "sandbox"}, {"name": "check_roaming_status", "roamingStatus": "DOMESTIC", "source": "sandbox"}],
+        [{"name": "check_sim_swap", "swapped": False, "source": "sandbox"}, {"name": "verify_location", "verificationResult": "TRUE", "radius_meters": 2000, "source": "sandbox"}, {"name": "check_roaming_status", "roamingStatus": "DOMESTIC", "source": "sandbox"}, {"name": "check_device_reachability", "reachabilityStatus": "DATA_ONLY", "source": "sandbox"}, {"name": "verify_number", "verified": True, "devicePhoneNumberVerified": True, "verificationStatus": "VERIFIED", "source": "sandbox"}],
         [],
     )
     assert result["assessment"]["status"] == "STEP_UP_REQUIRED"
@@ -234,6 +234,7 @@ def test_unreachable_device_alone_triggers_step_up():
             {"name": "verify_location", "verificationResult": "TRUE", "radius_meters": 2000, "source": "sandbox"},
             {"name": "check_roaming_status", "roamingStatus": "DOMESTIC", "source": "sandbox"},
             {"name": "check_device_reachability", "reachabilityStatus": "UNREACHABLE", "source": "sandbox"},
+            {"name": "verify_number", "verified": True, "devicePhoneNumberVerified": True, "verificationStatus": "VERIFIED", "source": "sandbox"},
         ],
         [],
     )
@@ -251,6 +252,7 @@ def test_number_verification_failure_escalates_verdict():
             {"name": "check_sim_swap", "swapped": False, "source": "sandbox"},
             {"name": "verify_location", "verificationResult": "TRUE", "radius_meters": 2000, "source": "sandbox"},
             {"name": "check_roaming_status", "roamingStatus": "DOMESTIC", "source": "sandbox"},
+            {"name": "check_device_reachability", "reachabilityStatus": "DATA_ONLY", "source": "sandbox"},
             {"name": "verify_number", "devicePhoneNumberVerified": False, "verified": False, "verificationStatus": "FAILED", "source": "Nokia CAMARA Sandbox"},
         ],
         [],
@@ -270,6 +272,7 @@ def test_number_verification_unknown_is_not_clean():
             {"name": "check_sim_swap", "swapped": False, "source": "sandbox"},
             {"name": "verify_location", "verificationResult": "TRUE", "radius_meters": 2000, "source": "sandbox"},
             {"name": "check_roaming_status", "roamingStatus": "DOMESTIC", "source": "sandbox"},
+            {"name": "check_device_reachability", "reachabilityStatus": "DATA_ONLY", "source": "sandbox"},
             {"name": "verify_number", "verificationStatus": "UNKNOWN", "devicePhoneNumberVerified": None, "verified": None, "source": "Nokia CAMARA Sandbox"},
         ],
         [],
@@ -280,19 +283,26 @@ def test_number_verification_unknown_is_not_clean():
     assert result["assessment"]["risk_score"] == "HIGH"
 
 
-def test_absent_number_verification_result_stays_neutral():
-    # Requests without the Number Verification tool (or where the tool error
-    # row produced no usable payload) must not be escalated on absence alone.
+def test_absent_number_verification_result_escalates_failsafe():
+    # Regression for the fail-safe policy: Number Verification is a required
+    # carrier signal in the live pipeline. When the tool produced no usable
+    # payload (or the error row carried no verification fields), the request
+    # must never be APPROVED on absence alone -- the fail-safe gate escalates
+    # it instead of treating missing data as a clean signal.
     result = synthesize_specialist_assessment(
         {"msisdn": "+99999991001", "amount": 100, "request_qod": False},
         [
             {"name": "check_sim_swap", "swapped": False, "source": "sandbox"},
             {"name": "verify_location", "verificationResult": "TRUE", "radius_meters": 2000, "source": "sandbox"},
             {"name": "check_roaming_status", "roamingStatus": "DOMESTIC", "source": "sandbox"},
+            {"name": "check_device_reachability", "reachabilityStatus": "DATA_ONLY", "source": "sandbox"},
         ],
         [],
     )
-    assert result["assessment"]["status"] == "APPROVED"
+    assert result["assessment"]["status"] in {"STEP_UP_REQUIRED", "MANUAL_REVIEW"}
+    assert result["assessment"]["risk_score"] == "HIGH"
+    assert "Number Verification" in result["assessment"]["reasoning"]
+    assert any(t["action"] == "FAIL_SAFE_GATE" for t in result["trace"])
 
 
 def test_congestion_high_corroborates_existing_risk():
@@ -305,6 +315,8 @@ def test_congestion_high_corroborates_existing_risk():
             {"name": "check_sim_swap", "swapped": False, "source": "sandbox"},
             {"name": "verify_location", "verificationResult": "TRUE", "radius_meters": 2000, "source": "sandbox"},
             {"name": "check_roaming_status", "roamingStatus": "DOMESTIC", "source": "sandbox"},
+            {"name": "check_device_reachability", "reachabilityStatus": "DATA_ONLY", "source": "sandbox"},
+            {"name": "verify_number", "verified": True, "devicePhoneNumberVerified": True, "verificationStatus": "VERIFIED", "source": "sandbox"},
             {"name": "get_congestion_insights", "maxCongestionLevel": "High", "source": "Nokia CAMARA Sandbox"},
         ],
         [],
@@ -325,6 +337,8 @@ def test_congestion_high_alone_is_not_standalone_signal():
             {"name": "check_sim_swap", "swapped": False, "source": "sandbox"},
             {"name": "verify_location", "verificationResult": "TRUE", "radius_meters": 2000, "source": "sandbox"},
             {"name": "check_roaming_status", "roamingStatus": "DOMESTIC", "source": "sandbox"},
+            {"name": "check_device_reachability", "reachabilityStatus": "DATA_ONLY", "source": "sandbox"},
+            {"name": "verify_number", "verified": True, "devicePhoneNumberVerified": True, "verificationStatus": "VERIFIED", "source": "sandbox"},
             {"name": "get_congestion_insights", "maxCongestionLevel": "High", "source": "Nokia CAMARA Sandbox"},
         ],
         [],
@@ -341,6 +355,8 @@ def test_congestion_medium_is_not_standalone_signal():
             {"name": "check_sim_swap", "swapped": False, "source": "sandbox"},
             {"name": "verify_location", "verificationResult": "TRUE", "radius_meters": 2000, "source": "sandbox"},
             {"name": "check_roaming_status", "roamingStatus": "DOMESTIC", "source": "sandbox"},
+            {"name": "check_device_reachability", "reachabilityStatus": "DATA_ONLY", "source": "sandbox"},
+            {"name": "verify_number", "verified": True, "devicePhoneNumberVerified": True, "verificationStatus": "VERIFIED", "source": "sandbox"},
             {"name": "get_congestion_insights", "maxCongestionLevel": "Medium", "source": "Nokia CAMARA Sandbox"},
         ],
         [],
@@ -357,6 +373,7 @@ def test_roaming_plus_swap_escalates_beyond_step_up():
             {"name": "verify_location", "verificationResult": "FALSE", "radius_meters": 2000, "source": "sandbox"},
             {"name": "check_roaming_status", "roamingStatus": "INTERNATIONAL_ROAMING", "countryIsoCodes": ["US"], "source": "sandbox"},
             {"name": "check_device_reachability", "reachabilityStatus": "DATA_ONLY", "source": "sandbox"},
+            {"name": "verify_number", "verified": True, "devicePhoneNumberVerified": True, "verificationStatus": "VERIFIED", "source": "sandbox"},
         ],
         [],
     )
@@ -372,6 +389,7 @@ def test_clean_signal_low_amount_approves():
             {"name": "verify_location", "verificationResult": "TRUE", "radius_meters": 2000, "source": "sandbox"},
             {"name": "check_roaming_status", "roamingStatus": "DOMESTIC", "source": "sandbox"},
             {"name": "check_device_reachability", "reachabilityStatus": "DATA_ONLY", "source": "sandbox"},
+            {"name": "verify_number", "verified": True, "devicePhoneNumberVerified": True, "verificationStatus": "VERIFIED", "source": "sandbox"},
         ],
         [],
     )
@@ -396,6 +414,7 @@ def test_recurrence_memory_escalates_clean_case_to_step_up():
             {"name": "verify_location", "verificationResult": "TRUE", "radius_meters": 2000, "source": "sandbox"},
             {"name": "check_roaming_status", "roamingStatus": "DOMESTIC", "source": "sandbox"},
             {"name": "check_device_reachability", "reachabilityStatus": "DATA_ONLY", "source": "sandbox"},
+            {"name": "verify_number", "verified": True, "devicePhoneNumberVerified": True, "verificationStatus": "VERIFIED", "source": "sandbox"},
         ],
         [],
     )
@@ -413,6 +432,7 @@ def test_recurrence_memory_escalates_clean_case_to_step_up():
             {"name": "verify_location", "verificationResult": "TRUE", "radius_meters": 2000, "source": "sandbox"},
             {"name": "check_roaming_status", "roamingStatus": "DOMESTIC", "source": "sandbox"},
             {"name": "check_device_reachability", "reachabilityStatus": "DATA_ONLY", "source": "sandbox"},
+            {"name": "verify_number", "verified": True, "devicePhoneNumberVerified": True, "verificationStatus": "VERIFIED", "source": "sandbox"},
         ],
         mem,
     )
@@ -440,6 +460,7 @@ def test_recurrence_memory_moderate_history_escalates_to_medium():
             {"name": "verify_location", "verificationResult": "TRUE", "radius_meters": 2000, "source": "sandbox"},
             {"name": "check_roaming_status", "roamingStatus": "DOMESTIC", "source": "sandbox"},
             {"name": "check_device_reachability", "reachabilityStatus": "DATA_ONLY", "source": "sandbox"},
+            {"name": "verify_number", "verified": True, "devicePhoneNumberVerified": True, "verificationStatus": "VERIFIED", "source": "sandbox"},
         ],
         memory_engine.list_all_incidents(msisdn),
     )
@@ -464,6 +485,7 @@ def test_memory_bumps_active_risk_one_level():
             {"name": "verify_location", "verificationResult": "TRUE", "radius_meters": 2000, "source": "sandbox"},
             {"name": "check_roaming_status", "roamingStatus": "DOMESTIC", "source": "sandbox"},
             {"name": "check_device_reachability", "reachabilityStatus": "DATA_ONLY", "source": "sandbox"},
+            {"name": "verify_number", "verified": True, "devicePhoneNumberVerified": True, "verificationStatus": "VERIFIED", "source": "sandbox"},
         ],
         memory_engine.list_all_incidents(msisdn),
     )

@@ -29,6 +29,13 @@ class NetworkMemoryEngine:
         self._local_store: List[Dict[str, Any]] = self._load_local_store()
         if Memory is None:
             return
+        if os.environ.get("AEGISTEL_LIVE_MEMORY", "0") != "1":
+            # Remote mem0/Qdrant/Gemini memory is only constructed when the
+            # deployment explicitly opts in (AEGISTEL_LIVE_MEMORY=1). The demo
+            # and test suite run entirely on the deterministic local store, so
+            # no network-dependent client is ever built without intent, and
+            # requests never hang on remote memory initialization.
+            return
         try:
             # mem0's LLM layer performs extraction/synthesis (one Gemini request
             # per memory op). Gemini's free tier is per-model and tiny (~20 RPD

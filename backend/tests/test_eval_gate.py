@@ -29,8 +29,9 @@ def _build_tool_results_for(msisdn: str, amount: float, request_qod: bool):
         verify = {"verificationResult": "TRUE", "radius_meters": 5000, "source": "Nokia NaC SDK", "name": "verify_location"}
         roam = {"roamingStatus": "DOMESTIC", "roaming": False, "countryIsoCodes": [], "source": "Nokia NaC SDK", "name": "check_roaming_status"}
         reach = {"reachabilityStatus": "DATA_ONLY", "reachable": True, "connectivity": ["DATA"], "source": "Nokia NaC SDK", "name": "check_device_reachability"}
+    nv = {"devicePhoneNumberVerified": True, "verified": True, "verificationStatus": "VERIFIED", "source": "Nokia NaC SDK", "name": "verify_number"}
 
-    results = [sim, verify, roam]
+    results = [sim, verify, roam, nv]
     if amount >= 25000 or request_qod:
         results.append({"sessionId": "test-session", "qosStatus": "REQUESTED", "qosProfile": "QOS_E", "name": "create_qod_session"})
     results.append(reach)

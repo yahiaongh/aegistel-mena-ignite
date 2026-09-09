@@ -2,7 +2,17 @@ from fastapi.testclient import TestClient
 
 from app.agents.crew_specialists import synthesize_specialist_assessment
 from app.agents.memory_agent import memory_engine
+from app.core.config import settings
 from app.main import app
+
+
+if not settings.AEGISTEL_ADMIN_KEY:
+    settings.AEGISTEL_ADMIN_KEY = "test-operator-key-aegistel"
+_ADMIN_KEY = settings.AEGISTEL_ADMIN_KEY
+
+
+def _operator_headers() -> dict:
+    return {"Authorization": f"Bearer {_ADMIN_KEY}"}
 
 
 def test_roaming_country_uses_iso_country_name() -> None:
@@ -28,7 +38,7 @@ def test_history_endpoint_returns_structured_incidents() -> None:
     )
 
     client = TestClient(app)
-    response = client.get("/api/v1/history/+99999991000?limit=5")
+    response = client.get("/api/v1/history/+99999991000?limit=5", headers=_operator_headers())
 
     assert response.status_code == 200
     payload = response.json()

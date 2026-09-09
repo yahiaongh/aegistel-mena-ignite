@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from dotenv import load_dotenv
-from fastapi import APIRouter, FastAPI, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -203,8 +203,34 @@ async def audit_transaction(request: AuditRequest) -> AuditResponse:
 
 
 
+def _resolve_admin_token(request: Request) -> str:
+    """Accept the admin token as Bearer, X-Admin-Token header, or ?token=."""
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return request.headers.get("x-admin-token", "") or request.query_params.get("token", "")
+
+
+def _require_operator(request: Request) -> str:
+    """FastAPI dependency for operator-only endpoints (history, memory wipe).
+
+    Requires AEGISTEL_ADMIN_KEY to be configured AND the caller to present a
+    matching token (Bearer, X-Admin-Token, or ?token=). Fails closed: 503 when
+    the key is unset, 401 on missing/mismatched credentials.
+    """
+    supplied = _resolve_admin_token(request)
+    if not settings.AEGISTEL_ADMIN_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="Operator API unavailable: AEGISTEL_ADMIN_KEY is not configured on this deployment.",
+        )
+    if not supplied or not secrets.compare_digest(supplied, settings.AEGISTEL_ADMIN_KEY):
+        raise HTTPException(status_code=401, detail="Operator authentication required.")
+    return supplied
+
+
 @router.get("/v1/history/{msisdn}")
-async def audit_history(msisdn: str, limit: int = 10):
+async def audit_history(msisdn: str, limit: int = 10, operator: str = Depends(_require_operator)):
     incidents = memory_engine.list_all_incidents(msisdn)
     # local store is append-ordered (oldest first): serve the most RECENT
     # `limit` records so the operator's risk trend reflects current history,
@@ -227,8 +253,8 @@ async def audit_history(msisdn: str, limit: int = 10):
 
 
 @router.post("/memory/clear-all")
-async def clear_all_memory():
-    """Clears all memory."""
+async def clear_all_memory(operator: str = Depends(_require_operator)):
+    """Clears all memory. Operator-only: destructive administrative action."""
     if memory_engine.memory:
         try:
             memory_engine.clear_all_memory()
@@ -237,14 +263,6 @@ async def clear_all_memory():
             raise HTTPException(status_code=500, detail=f"Memory clear error: {exc}") from exc
     memory_engine._local_store = []
     return {"status": "success", "message": "All local memory cleared"}
-
-
-def _resolve_admin_token(request: Request) -> str:
-    """Accept the admin token as Bearer, X-Admin-Token header, or ?token=."""
-    auth = request.headers.get("authorization", "")
-    if auth.lower().startswith("bearer "):
-        return auth[7:].strip()
-    return request.headers.get("x-admin-token", "") or request.query_params.get("token", "")
 
 
 @router.post("/feedback", status_code=201)

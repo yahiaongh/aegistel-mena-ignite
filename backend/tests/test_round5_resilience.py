@@ -50,6 +50,7 @@ def test_prompt_descriptions_stay_compact_for_large_memory_context():
 
 def test_memory_engine_prefers_groq_llm_and_falls_back_to_gemini(monkeypatch):
     captured = {}
+    monkeypatch.setenv("AEGISTEL_LIVE_MEMORY", "1")
 
     class FakeMemory:
         @classmethod

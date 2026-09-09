@@ -23,10 +23,23 @@ def test_audit_request_defaults_transaction_type():
 
 
 def test_audit_route_accepts_minimal_payload(monkeypatch):
-    async def fake_audit(request, progress_callback=None):
-        from app.agents.graph_orchestrator import execute_audit
+    # The real audit pipeline already has full end-to-end coverage in
+    # test_orchestrator.py. Here we only verify the HTTP contract: a minimal,
+    # valid request is accepted (200) and shaped into a compliant AuditResponse.
+    # Returning an immediate stub keeps this route test deterministic and fast.
+    from app.schemas.telemetry import AuditResponse, NokiaApiTelemetry
 
-        return await execute_audit(request, progress_callback)
+    async def fake_audit(request, progress_callback=None):
+        return AuditResponse(
+            msisdn=request.msisdn,
+            amount=request.amount,
+            transaction_type=request.transaction_type,
+            risk_score="LOW",
+            status="APPROVED",
+            telemetry=NokiaApiTelemetry(),
+            reasoning="stubbed route-contract test",
+            recommended_action="approve",
+        )
 
     monkeypatch.setattr(main_module, "execute_audit", fake_audit)
 
@@ -42,7 +55,9 @@ def test_audit_route_accepts_minimal_payload(monkeypatch):
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["status"] in {"APPROVED", "REJECTED", "BLOCKED", "STEP_UP_REQUIRED", "MANUAL_REVIEW"}
+    assert payload["status"] == "APPROVED"
+    assert payload["risk_score"] == "LOW"
+    assert payload["telemetry"]["evidence_summary"] is not None
 
 
 def test_audit_route_surfaces_detail_for_unhandled_errors(monkeypatch):

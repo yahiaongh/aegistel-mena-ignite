@@ -222,6 +222,8 @@ def test_risk_triggers_qod_provisioning(monkeypatch):
             return {"name": tool_name, "roamingStatus": "INTERNATIONAL_ROAMING", "countryIsoCodes": ["HU"], "source": "sandbox"}
         if tool_name == "check_device_reachability":
             return {"name": tool_name, "reachabilityStatus": "DATA_ONLY", "source": "sandbox"}
+        if tool_name == "verify_number":
+            return {"name": tool_name, "devicePhoneNumberVerified": True, "verified": True, "verificationStatus": "VERIFIED", "status_code": 200, "source": "sandbox"}
         if tool_name == "create_qod_session":
             return {"name": tool_name, "sessionId": "qod-123", "qosStatus": "REQUESTED", "qosProfile": "QOS_E", "source": "sandbox"}
         return {"name": tool_name, "status_code": 200, "source": "sandbox"}
@@ -259,6 +261,8 @@ def test_clean_low_amount_does_not_provision_qod(monkeypatch):
             return {"name": tool_name, "roamingStatus": "DOMESTIC", "source": "sandbox"}
         if tool_name == "check_device_reachability":
             return {"name": tool_name, "reachabilityStatus": "DATA_ONLY", "source": "sandbox"}
+        if tool_name == "verify_number":
+            return {"name": tool_name, "devicePhoneNumberVerified": True, "verified": True, "verificationStatus": "VERIFIED", "status_code": 200, "source": "sandbox"}
         return {"name": tool_name, "status_code": 200, "source": "sandbox"}
 
     monkeypatch.setattr(crew_specialists, "_run_tool_payload", fake_run_tool_payload)
@@ -295,6 +299,8 @@ def test_clean_low_amount_with_request_qod_flag_does_not_provision(monkeypatch):
             return {"name": tool_name, "roamingStatus": "DOMESTIC", "source": "sandbox"}
         if tool_name == "check_device_reachability":
             return {"name": tool_name, "reachabilityStatus": "DATA_ONLY", "source": "sandbox"}
+        if tool_name == "verify_number":
+            return {"name": tool_name, "devicePhoneNumberVerified": True, "verified": True, "verificationStatus": "VERIFIED", "status_code": 200, "source": "sandbox"}
         return {"name": tool_name, "status_code": 200, "source": "sandbox"}
 
     monkeypatch.setattr(crew_specialists, "_run_tool_payload", fake_run_tool_payload)

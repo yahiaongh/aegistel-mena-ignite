@@ -114,6 +114,24 @@ def _find_tool_result(tool_results: List[Dict[str, Any]], *keys: str) -> Dict[st
     return None
 
 
+def _signal_unavailable(result: Optional[Dict[str, Any]], required_keys: tuple[str, ...]) -> bool:
+    """A required carrier signal is unavailable when the tool produced no usable
+    payload (transport failure, exception, or HTTP error) or is absent from the
+    evidence set entirely. Absent or errored signals must never be treated as
+    clean evidence: the fail-safe gate escalates any request that cannot confirm
+    its required signals instead of approving it on missing data."""
+    if result is None:
+        return True
+    if result.get("error") is not None:
+        return True
+    try:
+        if int(result.get("status_code", 200)) >= 400:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return not any(key in result for key in required_keys)
+
+
 def synthesize_specialist_assessment(
     request_context: Dict[str, Any],
     tool_results: List[Dict[str, Any]],
@@ -135,6 +153,14 @@ def synthesize_specialist_assessment(
     number_verification_result = _find_tool_result(tool_results, "devicePhoneNumberVerified", "verificationStatus")
     congestion_result = _find_tool_result(tool_results, "maxCongestionLevel", "congestionLevels")
 
+    sim_unknown = _signal_unavailable(sim_result, ("swapped",))
+    location_unknown = _signal_unavailable(location_result, ("verificationResult",))
+    roaming_unknown = _signal_unavailable(roaming_result, ("roamingStatus",))
+    reachability_unknown = _signal_unavailable(reachability_result, ("reachabilityStatus", "reachable"))
+    number_verification_unknown = _signal_unavailable(
+        number_verification_result, ("devicePhoneNumberVerified", "verificationStatus", "verified")
+    )
+
     sim_swapped = bool(sim_result and sim_result.get("swapped"))
     number_verified = None
     if number_verification_result is not None:
@@ -150,18 +176,21 @@ def synthesize_specialist_assessment(
     number_verification_status = (
         "VERIFIED" if number_verified is True else ("FAILED" if number_verified is False else "UNKNOWN")
     )
-    number_verification_risk = number_verified is False or (
-        number_verification_status == "UNKNOWN" and number_verification_result is not None
-    )
+    number_verification_risk = number_verified is False or number_verification_unknown or (
+    number_verification_status == "UNKNOWN" and number_verification_result is not None
+)
 
     max_congestion_level = str(congestion_result.get("maxCongestionLevel", "")).lower() if congestion_result else ""
     congestion_high_risk = max_congestion_level == "high"
     congestion_medium = max_congestion_level == "medium"
-    verification_result = str(location_result.get("verificationResult", "TRUE")).upper() if location_result else "TRUE"
+    if location_unknown:
+        # A failed/absent verification (e.g. a CAMARA error row or an empty
+        # result) means the location could not be confirmed. Treat it as UNKNOWN
+        # so the transaction is never silently approved on missing data.
+        verification_result = "UNKNOWN"
+    else:
+        verification_result = str(location_result.get("verificationResult", "TRUE")).upper()
     if verification_result not in {"TRUE", "FALSE", "PARTIAL", "UNKNOWN"}:
-        # A failed/absent verification (e.g. a CAMARA error row yielding an
-        # empty result) means the location could not be confirmed. Treat it as
-        # UNKNOWN so the transaction is never silently approved on missing data.
         verification_result = "UNKNOWN"
     verification_match = verification_result == "TRUE"
     geofence_status = {
@@ -170,7 +199,12 @@ def synthesize_specialist_assessment(
         "PARTIAL": "PARTIAL",
     }.get(verification_result, "UNKNOWN")
     location_accuracy_meters = float(location_result.get("radius_meters", 120.0)) if location_result and location_result.get("radius_meters") is not None else 120.0
-    roaming_status = roaming_result.get("roamingStatus", "DOMESTIC") if roaming_result else "DOMESTIC"
+    if roaming_unknown:
+        roaming_status = "UNKNOWN"
+    else:
+        roaming_status = str(roaming_result.get("roamingStatus", "")).upper()
+        if roaming_status not in {"DOMESTIC", "INTERNATIONAL_ROAMING"}:
+            roaming_status = "UNKNOWN"
     roaming_country = None
     if roaming_result:
         country_codes = roaming_result.get("countryIsoCodes") or []
@@ -181,7 +215,10 @@ def synthesize_specialist_assessment(
     qod_status = qod_result.get("qosStatus") if qod_result else None
     memory_hits = bool(memory_context)
     roaming_policy_violation = enforce_roaming_policy and roaming_status == "INTERNATIONAL_ROAMING"
-    reachability_status = reachability_result.get("reachabilityStatus", "UNKNOWN") if reachability_result else "UNKNOWN"
+    if reachability_unknown:
+        reachability_status = "UNKNOWN"
+    else:
+        reachability_status = str(reachability_result.get("reachabilityStatus", "UNKNOWN")).upper()
     unreachable_risk = reachability_status == "UNREACHABLE"
     amount_risk = amount >= 100000
 
@@ -189,18 +226,23 @@ def synthesize_specialist_assessment(
 
     trace_items: List[Dict[str, Any]] = []
 
-    security_thought = (
-        f"Security Specialist flagged a SIM swap event for {msisdn}."
-        if sim_swapped
-        else f"Security Specialist found no recent SIM swap evidence for {msisdn}."
-    )
+    if sim_unknown:
+        security_thought = f"Security Specialist could not verify the SIM swap status for {msisdn} (required carrier signal unavailable)."
+        security_status = "FLAGGED"
+    else:
+        security_thought = (
+            f"Security Specialist flagged a SIM swap event for {msisdn}."
+            if sim_swapped
+            else f"Security Specialist found no recent SIM swap evidence for {msisdn}."
+        )
+        security_status = "FLAGGED" if sim_swapped else "CLEARED"
     trace_items.append(
         {
             "agent": "Security Specialist",
             "action": "SIM_SWAP_EVALUATION",
             "thought": security_thought,
-            "status": "FLAGGED" if sim_swapped else "CLEARED",
-            "detail": f"swapped={sim_swapped} | source={sim_result.get('source', 'sandbox') if sim_result else 'unknown'}",
+            "status": security_status,
+            "detail": f"swapped={sim_swapped} | source={sim_result.get('source', 'unknown') if sim_result else 'absent'}",
         }
     )
 
@@ -284,9 +326,12 @@ def synthesize_specialist_assessment(
 
     risk_signal = (
         sim_swapped
+        or sim_unknown
         or verification_result in {"FALSE", "PARTIAL", "UNKNOWN"}
         or roaming_status == "INTERNATIONAL_ROAMING"
+        or roaming_unknown
         or unreachable_risk
+        or reachability_unknown
         or tx_high_risk
         or number_verification_risk
     )
@@ -306,7 +351,33 @@ def synthesize_specialist_assessment(
     if roaming_policy_violation:
         risk_signal = True
 
-    if amount_risk and not risk_signal and not memory_hits and not congestion_high_risk:
+    unavailable_signals: List[str] = []
+    if sim_unknown:
+        unavailable_signals.append("SIM swap status")
+    if number_verification_unknown:
+        unavailable_signals.append("Number Verification")
+    if location_unknown:
+        unavailable_signals.append("Location Verification")
+    if roaming_unknown:
+        unavailable_signals.append("Roaming status")
+    if reachability_unknown:
+        unavailable_signals.append("Device reachability")
+
+    if unavailable_signals:
+        status = "MANUAL_REVIEW" if len(unavailable_signals) >= 3 else "STEP_UP_REQUIRED"
+        risk_score = "HIGH"
+        reasoning = (
+            "Fail-safe gate tripped: required carrier signals could not be verified ("
+            + ", ".join(unavailable_signals)
+            + "). A transaction is never approved on missing carrier evidence, so this request is "
+            + ("routed to manual review." if status == "MANUAL_REVIEW" else "escalated to step-up verification.")
+        )
+        recommended_action = (
+            "Hold settlement and complete manual review; requeue the audit once all carrier signals are available."
+            if status == "MANUAL_REVIEW"
+            else "Run step-up verification before settlement and re-run the audit to confirm the carrier signals recover."
+        )
+    elif amount_risk and not risk_signal and not memory_hits and not congestion_high_risk:
         status = "STEP_UP_REQUIRED"
         risk_score = "MEDIUM"
         reasoning = (
@@ -386,6 +457,19 @@ def synthesize_specialist_assessment(
         reasoning = "Specialist synthesis found no strong compromise indicators and approved the transaction for the supplied network context."
         recommended_action = "Allow the transaction and continue monitoring for additional telemetry."
 
+    if unavailable_signals:
+        trace_items.append(
+            {
+                "agent": "Risk Auditor",
+                "action": "FAIL_SAFE_GATE",
+                "thought": (
+                    f"Required carrier signal(s) unavailable: {', '.join(unavailable_signals)}. "
+                    "Locked to a non-approval verdict (fail-safe)."
+                ),
+                "status": status,
+                "detail": "fail-safe: never APPROVED on absent/errored carrier signals",
+            }
+        )
     trace_items.append(
         {
             "agent": "Risk Auditor",
@@ -445,7 +529,11 @@ def _run_tool_payload(tool_name: str, tool_callable: Any, **kwargs: Any) -> Dict
             return parsed_result
     except Exception as exc:
         logger.debug("Tool %s failed: %s", tool_name, exc)
-    return {"name": tool_name, "status_code": 200, "source": "sandbox", "error": "tool execution failed"}
+    # A failed tool must never be presented as successful telemetry: the row is
+    # labelled LOCAL FALLBACK with a non-2xx status and an explicit error so the
+    # fail-safe gate in synthesis treats the signal as unavailable instead of
+    # clean. Clients (Evidence Explorer) also render this as a fallback.
+    return {"name": tool_name, "status_code": 503, "source": "LOCAL FALLBACK", "error": "tool execution failed"}
 
 
 def _pick_value(parsed_output: Dict[str, Any], deterministic_output: Dict[str, Any], key: str) -> Any:

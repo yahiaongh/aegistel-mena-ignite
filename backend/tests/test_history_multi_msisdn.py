@@ -13,8 +13,13 @@ from fastapi.testclient import TestClient
 from app.agents import memory_agent
 from app.agents.graph_orchestrator import execute_audit
 from app.agents.memory_agent import memory_engine
+from app.core.config import settings
 from app.main import app
 from app.schemas.telemetry import AuditRequest, LocationInput
+
+if not settings.AEGISTEL_ADMIN_KEY:
+    settings.AEGISTEL_ADMIN_KEY = "test-operator-key-aegistel"
+_ADMIN_HEADERS = {"Authorization": f"Bearer {settings.AEGISTEL_ADMIN_KEY}"}
 
 
 def _record(msisdn: str, status: str, amount: float, risk: str = "LOW") -> None:
@@ -26,7 +31,7 @@ def _record(msisdn: str, status: str, amount: float, risk: str = "LOW") -> None:
 
 
 def _history(msisdn: str, limit: int = 8) -> dict:
-    response = TestClient(app).get(f"/api/v1/history/{msisdn}?limit={limit}")
+    response = TestClient(app).get(f"/api/v1/history/{msisdn}?limit={limit}", headers=_ADMIN_HEADERS)
     assert response.status_code == 200
     return response.json()
 
@@ -74,11 +79,11 @@ def test_history_survives_engine_reload_from_disk() -> None:
 
 def test_msisdn_normalization_forms_share_history() -> None:
     memory_engine.clear_all_memory()
-    _record("+1001", "APPROVED", 1.0)
-    _record("1001", "APPROVED", 2.0)
-    _record("  1001  ", "APPROVED", 3.0)
+    _record("+99999991001", "APPROVED", 1.0)
+    _record("99999991001", "APPROVED", 2.0)
+    _record(" 99999991001 ", "APPROVED", 3.0)
 
-    for form in ("+1001", "1001", "%2B1001"):
+    for form in ("+99999991001", "99999991001", "%2B99999991001"):
         payload = _history(form)
         assert payload["count"] == 3, f"form {form!r} -> {payload['count']}"
         assert [item["amount"] for item in payload["incidents"]] == [1.0, 2.0, 3.0]

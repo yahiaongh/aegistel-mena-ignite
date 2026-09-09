@@ -81,6 +81,7 @@ interface NokiaTelemetry {
   evidence_strength?: string;
   confidence?: number;
   cross_border_risk?: boolean;
+  evidence_summary?: { live_sdk?: number; sandbox?: number; local_fallback?: number };
   tool_results?: ToolResult[];
 }
 
@@ -164,6 +165,12 @@ const INITIAL_FLOW_TOOLS: FlowTool[] = [
   { name: "create_qod_session", state: "pending" },
 ];
 
+const normalizeE164 = (raw: string): string => {
+  const trimmed = raw.trim().replace(/\s+/g, "");
+  const digits = trimmed.replace(/[^0-9]/g, "");
+  return "+" + digits;
+};
+
 export default function AegisTelDashboard() {
   const [msisdn, setMsisdn] = useState("+99999991001");
   const [amount, setAmount] = useState("120000");
@@ -186,6 +193,11 @@ export default function AegisTelDashboard() {
   const [drillError, setDrillError] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryResponse | null>(null);
   const [historyOpen, setHistoryOpen] = useState(true);
+  const [historyLocked, setHistoryLocked] = useState(false);
+  const [opsToken, setOpsToken] = useState(() =>
+    typeof window !== "undefined" ? (sessionStorage.getItem("aegistel_ops_token") ?? "") : "",
+  );
+  const [opsTokenInput, setOpsTokenInput] = useState("");
   const [sessionStats, setSessionStats] = useState({ audits: 0, protectedAmount: 0 });
   const [sessionStatusCounts, setSessionStatusCounts] = useState<Record<string, number>>({
     APPROVED: 0,
@@ -292,10 +304,22 @@ export default function AegisTelDashboard() {
     let cancelled = false;
     const fetchHistory = async () => {
       try {
-        const res = await fetch(`${apiBase}/api/v1/history/${encodeURIComponent(msisdn)}?limit=8`);
+        const res = await fetch(`${apiBase}/api/v1/history/${encodeURIComponent(msisdn)}?limit=8`, {
+          headers: opsToken ? { Authorization: `Bearer ${opsToken}` } : {},
+        });
+        if (res.status === 401 || res.status === 503) {
+          if (!cancelled) {
+            setHistory(null);
+            setHistoryLocked(true);
+          }
+          return;
+        }
         if (!res.ok) throw new Error(`History fetch failed: ${res.status}`);
         const data: HistoryResponse = await res.json();
-        if (!cancelled) setHistory(data);
+        if (!cancelled) {
+          setHistory(data);
+          setHistoryLocked(false);
+        }
       } catch {
         if (!cancelled) setHistory(null);
       }
@@ -305,7 +329,7 @@ export default function AegisTelDashboard() {
     return () => {
       cancelled = true;
     };
-  }, [apiBase, msisdn, auditResult]);
+  }, [apiBase, msisdn, auditResult, opsToken]);
 
   const playVoiceAlert = async (text: string) => {
     if (activeAudioRef.current) {
@@ -481,7 +505,7 @@ export default function AegisTelDashboard() {
     if (!deterministicRetry) setLiveEvents([]);
 
     const payload = {
-      msisdn: targetPhone,
+      msisdn: normalizeE164(targetPhone),
       amount: parseFloat(targetAmount),
       transaction_type: "WIRE_TRANSFER",
       current_location: {
@@ -1317,6 +1341,38 @@ export default function AegisTelDashboard() {
                   </div>
                 </div>
 
+                {(() => {
+                  const es = auditResult.telemetry.evidence_summary ?? {};
+                  const live = es.live_sdk ?? 0;
+                  const sandbox = es.sandbox ?? 0;
+                  const local = es.local_fallback ?? 0;
+                  const total = live + sandbox + local;
+                  const source =
+                    live > 0
+                      ? "LIVE SDK"
+                      : sandbox > 0
+                        ? "NOKIA SANDBOX"
+                        : "LOCAL FALLBACK";
+                  const tone =
+                    live > 0
+                      ? "border-emerald-700/60 text-emerald-300"
+                      : sandbox > 0
+                        ? "border-sky-700/60 text-sky-300"
+                        : "border-amber-700/60 text-amber-300";
+                  return (
+                    <div className={`flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-[11px] bg-slate-950/60 ${tone}`}>
+                      <span className="font-bold uppercase tracking-wide">
+                        {total === 0 ? "No Telemetry Evidence" : `Evidence Source: ${source}`}
+                      </span>
+                      <span className="text-slate-300">
+                        {live > 0 ? `${live} live SDK · ` : ""}
+                        {sandbox > 0 ? `${sandbox} sandbox · ` : ""}
+                        {local > 0 ? `${local} local fallback` : ""}
+                      </span>
+                    </div>
+                  );
+                })()}
+
                 <div
                   className={`rounded-xl border p-4 space-y-2 text-xs shadow-[0_0_0_1px_rgba(255,255,255,0.03),0_12px_40px_rgba(2,8,23,0.35)] transition-all duration-500 ${verdictVisible ? "opacity-100 scale-100" : "opacity-0 scale-95"}`}
                   style={{
@@ -1368,9 +1424,10 @@ export default function AegisTelDashboard() {
                             <span className={`text-[9px] px-1.5 py-0.5 rounded border font-bold ${
                               tool.source === "Nokia NaC SDK" ? "text-cyan-300 border-cyan-800 bg-cyan-950"
                               : tool.source === "CAMARA REST" ? "text-violet-300 border-violet-800 bg-violet-950"
+                              : tool.source === "LOCAL FALLBACK" ? "text-amber-300 border-amber-800 bg-amber-950"
                               : "text-slate-400 border-slate-700 bg-slate-950"
                             }`}>
-                              {tool.source === "Nokia NaC SDK" ? "LIVE SDK" : tool.source === "CAMARA REST" ? "REST" : "SANDBOX"}
+                              {tool.source === "Nokia NaC SDK" ? "LIVE SDK" : tool.source === "CAMARA REST" ? "REST" : tool.source === "LOCAL FALLBACK" ? "LOCAL FALLBACK" : "SANDBOX"}
                             </span>
                             {tool.duration_ms != null ? <span className="text-[9px] text-slate-200">{tool.duration_ms}ms</span> : null}
                           </span>
@@ -1405,6 +1462,42 @@ export default function AegisTelDashboard() {
                     <span className="text-[10px] text-slate-400">{historyOpen ? "Collapse" : "Expand"}</span>
                   </button>
                   {historyOpen ? (
+                    historyLocked ? (
+                      <div className="mt-4 rounded-lg border border-amber-900/70 bg-amber-950/20 p-4">
+                        <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-amber-300">Operator-only · subscriber incident history</div>
+                        <p className="mt-1 text-[11px] text-slate-300">
+                          Subscriber risk history is protected. Enter the deployment passcode ({`AEGISTEL_ADMIN_KEY`}) to
+                          unlock this panel.
+                        </p>
+                        <div className="mt-3 flex items-center gap-2">
+                          <input
+                            type="password"
+                            value={opsTokenInput}
+                            onChange={(e) => setOpsTokenInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                setOpsToken(opsTokenInput);
+                                sessionStorage.setItem("aegistel_ops_token", opsTokenInput);
+                                setOpsTokenInput("");
+                              }
+                            }}
+                            placeholder="Operator passcode"
+                            className="flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-200 placeholder:text-slate-500 outline-none"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setOpsToken(opsTokenInput);
+                              sessionStorage.setItem("aegistel_ops_token", opsTokenInput);
+                              setOpsTokenInput("");
+                            }}
+                            className="rounded-lg border border-amber-800 bg-amber-950 px-3 py-2 text-[11px] font-bold text-amber-300"
+                          >
+                            Unlock
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
                     <div className="mt-4 grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
                       <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
                         <div className="mb-3 flex items-center justify-between">
@@ -1458,6 +1551,7 @@ export default function AegisTelDashboard() {
                         )}
                       </div>
                     </div>
+                    )
                   ) : null}
                 </div>
 

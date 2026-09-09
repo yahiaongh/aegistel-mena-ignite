@@ -79,15 +79,25 @@ def test_stream_result_matches_non_stream_audit():
     assert plain.json()["risk_score"] == result["risk_score"]
 
 
-def test_stream_error_event_on_failure():
+def test_stream_error_event_on_failure(monkeypatch):
+    async def boom(request, progress_callback=None):
+        raise RuntimeError("quota exhausted")
+
+    from app import main as main_module
+
+    monkeypatch.setattr(main_module, "execute_audit", boom)
+
     frames = _stream_audit(
         {
             "msisdn": "+99999991000",
-            "amount": -5000,
+            "amount": 5000,
             "transaction_type": "WIRE_TRANSFER",
             "current_location": {"latitude": 24.7, "longitude": 46.7},
             "metadata": {"_force_deterministic": True},
         }
     )
     event_names = [name for name, _ in frames]
-    assert ("error" in event_names) or ("result" in event_names), frames
+    assert "error" in event_names
+    error_payload = next(payload for name, payload in frames if name == "error")
+    assert error_payload["type"] == "RuntimeError"
+    assert "quota exhausted" in error_payload["error"]
