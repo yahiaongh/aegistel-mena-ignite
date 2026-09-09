@@ -3,12 +3,15 @@
 import React from "react";
 import {
   Activity,
+  Calendar,
   CheckCircle2,
   Cpu,
   Globe,
   Loader2,
   MapPin,
+  PhoneIncoming,
   RadioTower,
+  RotateCcw,
   ShieldCheck,
   Smartphone,
   Wifi,
@@ -33,15 +36,63 @@ interface AuditFlowDiagramProps {
   verdict?: { status?: string; risk?: string } | null;
 }
 
-const TOOL_META: Record<string, { short: string; icon: React.ReactNode; label: string }> = {
-  check_sim_swap: { short: "SIM", icon: <Smartphone className="w-3 h-3" />, label: "SIM SWAP" },
-  verify_location: { short: "LOC", icon: <MapPin className="w-3 h-3" />, label: "GEOFENCE" },
-  check_roaming_status: { short: "ROM", icon: <Globe className="w-3 h-3" />, label: "ROAMING" },
-  check_device_reachability: { short: "RCH", icon: <Wifi className="w-3 h-3" />, label: "REACHABILITY" },
-  verify_number: { short: "NV", icon: <ShieldCheck className="w-3 h-3" />, label: "NUMBER VRFY" },
-  get_congestion_insights: { short: "CG", icon: <Activity className="w-3 h-3" />, label: "CONGESTION" },
-  create_qod_session: { short: "QoD", icon: <Zap className="w-3 h-3" />, label: "QoD SLICE" },
+type ToolIconComponent = React.ComponentType<{ className?: string }>;
+
+const ICON_MAP: Record<string, ToolIconComponent> = {
+  check_sim_swap: Smartphone,
+  verify_location: MapPin,
+  check_roaming_status: Globe,
+  check_device_reachability: Wifi,
+  verify_number: ShieldCheck,
+  get_congestion_insights: Activity,
+  create_qod_session: Zap,
+  check_call_forwarding: PhoneIncoming,
+  check_device_swap: RotateCcw,
+  check_number_recycling: Activity,
+  check_kyc_tenure: Calendar,
+  check_kyc_match: ShieldCheck,
 };
+
+function getToolIcon(name: string): React.ReactNode {
+  const Component = ICON_MAP[name] ?? Cpu;
+  return <Component className="w-3 h-3" />;
+}
+
+function getToolLabel(name: string): string {
+  switch (name) {
+    case "check_sim_swap": return "SIM SWAP";
+    case "verify_location": return "GEOFENCE";
+    case "check_roaming_status": return "ROAMING";
+    case "check_device_reachability": return "REACHABILITY";
+    case "verify_number": return "NUMBER VRFY";
+    case "get_congestion_insights": return "CONGESTION";
+    case "create_qod_session": return "QoD SLICE";
+    case "check_call_forwarding": return "CALL FWD";
+    case "check_device_swap": return "DEV SWAP";
+    case "check_number_recycling": return "NUM RECYCLE";
+    case "check_kyc_tenure": return "KYC TENURE";
+    case "check_kyc_match": return "KYC MATCH";
+    default: return name.toUpperCase();
+  }
+}
+
+function getToolShort(name: string): string {
+  switch (name) {
+    case "check_sim_swap": return "SIM";
+    case "verify_location": return "LOC";
+    case "check_roaming_status": return "ROM";
+    case "check_device_reachability": return "RCH";
+    case "verify_number": return "NV";
+    case "get_congestion_insights": return "CG";
+    case "create_qod_session": return "QoD";
+    case "check_call_forwarding": return "FWD";
+    case "check_device_swap": return "DSW";
+    case "check_number_recycling": return "NRC";
+    case "check_kyc_tenure": return "KYC";
+    case "check_kyc_match": return "KYM";
+    default: return name.slice(0, 3).toUpperCase();
+  }
+}
 
 const STATE_STYLES: Record<FlowState, { box: string; text: string; ring: string; dot: string }> = {
   pending: { box: "border-slate-800 bg-slate-950/60", text: "text-slate-500", ring: "", dot: "bg-slate-700" },
@@ -129,9 +180,8 @@ export default function AuditFlowDiagram({ phase, tools, specialist, auditor, ll
             <span className="text-[10px] font-bold tracking-wider text-slate-200">CAMARA TOOLS</span>
             <span className="text-[8px] text-slate-500">({tools.filter((t) => t.state !== "pending").length}/{tools.length})</span>
           </div>
-          <div className="grid grid-cols-3 sm:grid-cols-4 gap-1.5">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-1.5">
             {tools.map((tool) => {
-              const meta = TOOL_META[tool.name] ?? { short: tool.name.slice(0, 3).toUpperCase(), icon: <Cpu className="w-3 h-3" />, label: tool.name.toUpperCase() };
               const s = STATE_STYLES[tool.state];
               return (
                 <div
@@ -139,8 +189,8 @@ export default function AuditFlowDiagram({ phase, tools, specialist, auditor, ll
                   title={`${tool.name}${tool.durationMs ? ` — ${tool.durationMs}ms` : ""}${tool.source ? ` — ${tool.source}` : ""}`}
                   className={`flex items-center gap-1.5 rounded border px-2 py-1.5 min-w-0 ${s.box} ${s.ring}`}
                 >
-                  <span className="shrink-0">{meta.icon}</span>
-                  <span className="text-[8px] font-bold tracking-wide truncate">{meta.label}</span>
+                  <span className="shrink-0">{getToolIcon(tool.name)}</span>
+                  <span className="text-[8px] font-bold tracking-wide truncate">{getToolLabel(tool.name)}</span>
                 </div>
               );
             })}
@@ -168,15 +218,14 @@ export default function AuditFlowDiagram({ phase, tools, specialist, auditor, ll
 
         <div className={`flex items-center gap-1.5 px-2 py-2 rounded-lg border ${running ? "border-cyan-700/60 bg-slate-950/80" : "border-slate-800 bg-slate-950/60"}`}>
           <Cpu className="w-3 h-3 text-cyan-400 shrink-0" />
-          <div className="grid grid-cols-4 gap-1">
+          <div className="grid grid-cols-4 sm:grid-cols-5 lg:grid-cols-6 gap-1">
             {tools.map((tool) => {
-              const meta = TOOL_META[tool.name] ?? { short: tool.name.slice(0, 3).toUpperCase(), icon: <Cpu className="w-3 h-3" />, label: tool.name.toUpperCase() };
               const s = STATE_STYLES[tool.state];
               return (
                 <div key={tool.name} title={`${tool.name}${tool.durationMs ? ` — ${tool.durationMs}ms` : ""}${tool.source ? ` — ${tool.source}` : ""}`} className={`flex items-center gap-1 rounded border px-1.5 py-1 ${s.box} ${s.ring}`}>
-                  {meta.icon}
-                  <span className="hidden lg:inline text-[8px] font-bold tracking-wide">{meta.label}</span>
-                  <span className="lg:hidden text-[8px] font-bold">{meta.short}</span>
+                  {getToolIcon(tool.name)}
+                  <span className="hidden lg:inline text-[8px] font-bold tracking-wide">{getToolLabel(tool.name)}</span>
+                  <span className="lg:hidden text-[8px] font-bold">{getToolShort(tool.name)}</span>
                 </div>
               );
             })}
