@@ -161,12 +161,33 @@ interface DrillReport {
 const INITIAL_FLOW_TOOLS: FlowTool[] = [
   { name: "check_sim_swap", state: "pending" },
   { name: "verify_location", state: "pending" },
-  { name: "check_roaming_status", state: "pending" },
-  { name: "check_device_reachability", state: "pending" },
   { name: "verify_number", state: "pending" },
+  { name: "check_device_reachability", state: "pending" },
+  { name: "check_call_forwarding", state: "pending" },
+  { name: "check_roaming_status", state: "pending" },
+  { name: "check_device_swap", state: "pending" },
+  { name: "check_number_recycling", state: "pending" },
   { name: "get_congestion_insights", state: "pending" },
+  { name: "check_kyc_tenure", state: "pending" },
   { name: "create_qod_session", state: "pending" },
 ];
+
+const TOOL_DISPLAY_NAMES: Record<string, string> = {
+  check_sim_swap: "SIM Swap Check",
+  verify_location: "Location Verification",
+  verify_number: "Number Verification",
+  check_device_reachability: "Device Reachability",
+  check_call_forwarding: "Call Forwarding",
+  check_roaming_status: "Roaming Status",
+  check_device_swap: "Device Swap",
+  check_number_recycling: "Number Recycling",
+  get_congestion_insights: "Congestion Insights",
+  check_kyc_tenure: "KYC Tenure",
+  check_kyc_match: "KYC Match",
+  create_qod_session: "QoD Session",
+};
+
+const getToolDisplayName = (name: string): string => TOOL_DISPLAY_NAMES[name] ?? name;
 
 const normalizeE164 = (raw: string): string => {
   const trimmed = raw.trim().replace(/\s+/g, "");
@@ -1513,7 +1534,7 @@ export default function AegisTelDashboard() {
                         <summary className="cursor-pointer px-3 py-2 flex items-center justify-between gap-2 text-[11px]">
                           <span className="flex items-center gap-2 font-bold text-slate-200">
                             <span className={`w-1.5 h-1.5 rounded-full ${tool.success ? "bg-emerald-400" : "bg-rose-400"}`} />
-                            {tool.name}
+                            {getToolDisplayName(tool.name)}
                           </span>
                           <span className="flex items-center gap-2">
                             <span className={`text-[9px] px-1.5 py-0.5 rounded border font-bold ${
