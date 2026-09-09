@@ -2,6 +2,7 @@ import asyncio
 import json
 import re
 import time
+import uuid
 from typing import Annotated, Any, Dict, List, Literal, TypedDict
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
@@ -72,6 +73,26 @@ def _compute_confidence(tool_results: list[dict]) -> float:
     return round(base, 2)
 
 
+def _tool_succeeded(item: Dict[str, Any]) -> bool:
+    """Derive a tool call's success from its result payload, so the evidence
+    trail stays internally consistent: a payload carrying an error or a
+    failing HTTP status is reported as a failure, never as a clean success.
+
+    Success requires BOTH: no `error` field AND an HTTP status below 400.
+    Payloads without a status_code (pure result objects) are presumed success
+    when they carry no error.
+    """
+    if item.get("error"):
+        return False
+    status = item.get("status_code")
+    if status is None:
+        return True
+    try:
+        return int(status) < 400
+    except (TypeError, ValueError):
+        return False
+
+
 def _extract_request_context(messages: List[BaseMessage]) -> Dict[str, Any]:
     human_message = next((msg for msg in reversed(messages) if isinstance(msg, HumanMessage)), None)
     if not human_message:
@@ -131,8 +152,28 @@ aegis_graph = builder.compile()
 SIMULATOR_MSISDNS = {"+99999991000", "+99999991001", "+99999991002", "+99999991003", "+9999123456"}
 
 
-async def execute_audit(request: AuditRequest, progress_callback: Any | None = None) -> AuditResponse:
+def _normalize_tenant(tenant_id: str) -> str:
+    """Defensive normalization for the server-derived tenant namespace.
+
+    The tenant is resolved server-side (from the API client's credential via
+    main._resolve_tenant), so this is belt-and-suspenders: it keeps the value
+    in the shape used for memory scoping and record metadata, and falls back to
+    the configured default if anything unexpected ever reaches here.
+    """
+    value = (tenant_id or "").strip().lower()
+    if not value or not all(ch.isalnum() or ch in "-_" for ch in value):
+        return settings.AEGISTEL_DEFAULT_TENANT
+    return value
+
+
+async def execute_audit(request: AuditRequest, progress_callback: Any | None = None, tenant_id: str | None = None) -> AuditResponse:
     t0 = time.monotonic()
+    # The tenant namespace is supplied by the caller of this function (main.py
+    # derives it from the API client's credential). It is never read from the
+    # request body — AuditRequest has no tenant field. Everything downstream
+    # (memory writes, memory reads, response echo) uses this single value.
+    tenant_id = _normalize_tenant(tenant_id or settings.AEGISTEL_DEFAULT_TENANT)
+    audit_id = uuid.uuid4()
     def _mark(label: str) -> float:
         return round((time.monotonic() - t0) * 1000, 1)
     timing: Dict[str, float] = {"total_ms": 0.0}
@@ -143,7 +184,9 @@ async def execute_audit(request: AuditRequest, progress_callback: Any | None = N
         "longitude": request.current_location.longitude,
         "request_qod": request.request_qod_slice,
         "transaction_type": request.transaction_type,
+        "tenant_id": tenant_id,
         "metadata": request.metadata,
+        "agent_planning": True,
         "force_deterministic": bool(request.metadata.get("_force_deterministic")),
     }
     print(f"[Graph Orchestrator] Request context: {request_context}")
@@ -153,6 +196,7 @@ async def execute_audit(request: AuditRequest, progress_callback: Any | None = N
         memory_context = await memory_engine.retrieve_past_incidents_async(
             request.msisdn,
             f"fraud pattern {request.transaction_type} {request.current_location.latitude} {request.current_location.longitude}",
+            tenant_id=tenant_id,
         )
     timing["memory_retrieve_ms"] = _mark("memory_retrieve")
     if progress_callback is not None:
@@ -160,7 +204,7 @@ async def execute_audit(request: AuditRequest, progress_callback: Any | None = N
             # Report the full recorded trail (simulator audits are recorded but
             # excluded from verdict weighting, so len(memory_context) would lie
             # to the operator as 0). Weighting semantics are untouched.
-            prior_count = len(memory_engine.list_all_incidents(request.msisdn))
+            prior_count = len(memory_engine.list_all_incidents(request.msisdn, tenant_id=tenant_id))
             progress_callback({"type": "memory:done", "incidents": prior_count})
         except Exception:
             pass
@@ -195,6 +239,23 @@ async def execute_audit(request: AuditRequest, progress_callback: Any | None = N
     timing["crew_ms"] = round((time.monotonic() - t0) * 1000, 1) - timing["memory_retrieve_ms"]
     specialist_output = final_state.get("specialist_output", {}) if isinstance(final_state.get("specialist_output"), dict) else {}
     assessment = FinalAssessment(**final_state["assessment"].model_dump()) if final_state.get("assessment") else FinalAssessment(**specialist_output.get("assessment", {}))
+
+    # QoD is a recommendation only. The decision pipeline never provisions a QoD
+    # session (that would borrow a chargeable network resource before any
+    # consent). We surface the recommendation to the UI; provisioning happens
+    # through the explicit, authenticated, policy-gated confirm endpoint.
+    qod_recommended = bool(specialist_output.get("qod_recommended")) or assessment.status == "STEP_UP_REQUIRED"
+    if progress_callback is not None:
+        try:
+            progress_callback(
+                {
+                    "type": "qod:recommended",
+                    "status": assessment.status,
+                    "recommended": qod_recommended,
+                }
+            )
+        except Exception:
+            pass
 
     trace: List[AgentTraceItem] = [
         AgentTraceItem(
@@ -254,7 +315,7 @@ async def execute_audit(request: AuditRequest, progress_callback: Any | None = N
         tool_results=[
             ToolCallResult(
                 name=item.get("name", "tool"),
-                success=True,
+                success=_tool_succeeded(item),
                 source=item.get("source", "sandbox"),
                 duration_ms=item.get("duration_ms"),
                 payload=item,
@@ -276,6 +337,9 @@ async def execute_audit(request: AuditRequest, progress_callback: Any | None = N
             "risk_score": assessment.risk_score,
             "status": assessment.status,
             "roaming_status": assessment.roaming_status,
+            "tenant_id": tenant_id,
+            "audit_id": str(audit_id),
+            "qod_recommended": qod_recommended,
         },
     )
     timing["total_ms"] = round((time.monotonic() - t0) * 1000, 1)
@@ -293,11 +357,14 @@ async def execute_audit(request: AuditRequest, progress_callback: Any | None = N
             )
         )
     return AuditResponse(
+        audit_id=audit_id,
         msisdn=request.msisdn,
         amount=request.amount,
         transaction_type=request.transaction_type,
+        tenant_id=tenant_id,
         risk_score=assessment.risk_score,
         status=assessment.status,
+        qod_recommended=qod_recommended,
         telemetry=telemetry,
         reasoning=assessment.reasoning,
         recommended_action=assessment.recommended_action,

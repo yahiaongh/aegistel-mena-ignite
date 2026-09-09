@@ -209,7 +209,7 @@ def test_model_chain_retries_each_supported_model_once(monkeypatch):
     ]
 
 
-def test_risk_triggers_qod_provisioning(monkeypatch):
+def test_risk_recommends_qod_but_never_provisions(monkeypatch):
     tool_names = []
 
     def fake_run_tool_payload(tool_name, tool_callable, **kwargs):
@@ -240,12 +240,13 @@ def test_risk_triggers_qod_provisioning(monkeypatch):
         [],
     )
 
-    # HIGH risk with a low amount and no explicit QoD request must still
-    # auto-provision a QoD session (risk-triggered provisioning).
-    assert "create_qod_session" in tool_names
+    # HIGH risk with a low amount and no explicit QoD request yields a QoD
+    # RECOMMENDATION only. Provisioning the chargeable session happens through
+    # the explicit, policy-gated confirm endpoint, never inside the decision.
+    assert "create_qod_session" not in tool_names
     assert result["assessment"]["status"] == "STEP_UP_REQUIRED"
-    assert result["assessment"]["qod_session_active"] is True
-    assert any("QoD-assisted step-up session was provisioned" in str(result["assessment"].get("reasoning", "")) for _ in [0])
+    assert result["assessment"]["qod_session_active"] is False
+    assert result["qod_recommended"] is True
 
 
 def test_clean_low_amount_does_not_provision_qod(monkeypatch):

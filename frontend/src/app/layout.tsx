@@ -19,9 +19,9 @@ const geistMono = localFont({
 });
 
 export const metadata: Metadata = {
-  title: "AegisTel — Telecom-Aware AI Fraud Guard",
+  title: "AegisTel — MENA Payment-Fraud & Account-Takeover Guard",
   description:
-    "Autonomous telco-aware fraud guard running CAMARA APIs through the Nokia Network-as-Code SDK.",
+    "Telecom-aware anti-fraud guard stopping account takeover (ATO) and SIM-swap payment fraud via CAMARA APIs through the Nokia Network-as-Code SDK.",
 };
 
 export default function RootLayout({

@@ -29,7 +29,7 @@ def test_audit_route_accepts_minimal_payload(monkeypatch):
     # Returning an immediate stub keeps this route test deterministic and fast.
     from app.schemas.telemetry import AuditResponse, NokiaApiTelemetry
 
-    async def fake_audit(request, progress_callback=None):
+    async def fake_audit(request, progress_callback=None, tenant_id=None):
         return AuditResponse(
             msisdn=request.msisdn,
             amount=request.amount,
@@ -61,7 +61,7 @@ def test_audit_route_accepts_minimal_payload(monkeypatch):
 
 
 def test_audit_route_surfaces_detail_for_unhandled_errors(monkeypatch):
-    async def boom(request):
+    async def boom(request, progress_callback=None, tenant_id=None):
         raise RuntimeError("quota exhausted")
 
     monkeypatch.setattr(main_module, "execute_audit", boom)

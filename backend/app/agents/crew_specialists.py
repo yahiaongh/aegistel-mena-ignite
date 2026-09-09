@@ -8,13 +8,17 @@ import warnings
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional
 
-from crewai import Agent, Crew, Task
+# CrewAI pulls in a substantial auth/tracing dependency graph. Keep it lazy so
+# deterministic audits (the default test/demo fallback) do not pay that cold
+# import cost or initialize model-side machinery they will never use.
+Agent = None
+Crew = None
+Task = None
 
 from app.agents.tools import (
     check_device_reachability,
     check_roaming_status,
     check_sim_swap,
-    create_qod_session,
     get_congestion_insights,
     verify_location,
     verify_number,
@@ -25,10 +29,23 @@ from app.core.constants import ISO_COUNTRY_NAMES
 logger = logging.getLogger(__name__)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-try:
-    import litellm
-except Exception:
-    litellm = None
+
+def _ensure_crewai() -> bool:
+    """Load CrewAI only for a model-backed planner or specialist run."""
+    global Agent, Crew, Task
+    if Agent is not None and Crew is not None and Task is not None:
+        return True
+    try:
+        from crewai import Agent as CrewAgent, Crew as CrewWorkflow, Task as CrewTask
+
+        Agent, Crew, Task = CrewAgent, CrewWorkflow, CrewTask
+        _patch_litellm_for_crewai()
+        return True
+    except Exception as exc:
+        logger.warning("CrewAI is unavailable; using deterministic specialist fallback: %s", exc)
+        return False
+
+litellm = None
 
 # Fast, reliable free-tier models are preferred first. Rate-limited providers
 # (e.g. an exhausted Gemini free-tier quota) are skipped via _PROVIDER_COOLDOWN
@@ -75,8 +92,92 @@ VALID_RISK_SCORES = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
 # Explicit transaction types which should be treated as higher-risk signals
 HIGH_RISK_TX_TYPES = {"CROSS_BORDER_SWIFT", "SAME_DAY_WIRE", "GIFT_CARD_TOPUP"}
 
+# ── Bounded signal planning ──────────────────────────────────────────────────
+# Base CAMARA calls are NOT hard-wired for every request. `plan_tool_calls`
+# decides, up front and deterministically, which signals are required for the
+# transaction type and risk context, what is deferred, and why. The required
+# set feeds the fail-safe gate in synthesis (a required signal that cannot be
+# gathered still locks the verdict to a non-approval), while deferred signals
+# are pulled in only when the risk scan or value justifies a deeper pass. The
+# pool is a fixed whitelist, so the planner is bounded and cannot invent tools.
+SIGNAL_TOOL_NAMES: Dict[str, str] = {
+    "sim": "check_sim_swap",
+    "number_verification": "verify_number",
+    "location": "verify_location",
+    "roaming": "check_roaming_status",
+    "reachability": "check_device_reachability",
+    "congestion": "get_congestion_insights",
+}
+TOOL_SIGNAL_KEY: Dict[str, str] = {v: k for k, v in SIGNAL_TOOL_NAMES.items()}
+
+# Core identity line-integrity signals every transaction needs.
+_CORE_TOOLS = ["check_sim_swap", "verify_number", "verify_location", "check_device_reachability"]
+_REFERENCE_TOOLS = ["check_roaming_status", "get_congestion_insights"]
+
+# Convenience / low-touch flows: identity + geo + reachability suffice; roaming
+# and congestion are deferred unless the risk scan or value demands them.
+LOW_TOUCH_TX_TYPES = {"P2P_TRANSFER", "P2P", "MOBILE_PAYMENT", "BILL_PAYMENT"}
+# Value-movement / ATO-prone flows: roaming context is required because those
+# channels are the common mule/SIM-swap vectors; congestion stays deferred as a
+# secondary contextual signal.
+HIGH_TOUCH_TX_TYPES = {
+    "WIRE_TRANSFER",
+    "SAME_DAY_WIRE",
+    "CROSS_BORDER_SWIFT",
+    "INSTANT_PAYMENT",
+    "GIFT_CARD_TOPUP",
+}
+
+
+def plan_tool_calls(request_context: Dict[str, Any]) -> Dict[str, Any]:
+    """Decide which base CAMARA signals a transaction needs before any call is
+    made. Returns a deterministic, bounded plan:
+
+      required  - signals the verdict depends on (fail-safe gated)
+      deferred  - optional signals, pulled in only when risk/value justifies
+      rationale - human-readable explanation shown in the trace
+      low_touch - whether the transaction type is a convenience flow
+    """
+    transaction_type = str(request_context.get("transaction_type", "")).upper()
+    amount = float(request_context.get("amount", 0.0) or 0.0)
+    low_touch = transaction_type in LOW_TOUCH_TX_TYPES
+
+    if low_touch:
+        required = list(_CORE_TOOLS)
+        deferred = list(_REFERENCE_TOOLS)
+        rationale = (
+            f"Low-touch {transaction_type or 'payment'} flow: decisive evidence is device identity "
+            "and line integrity (SIM swap status, silent number binding, geo presence, reachability). "
+            "Roaming and congestion are deferred; they are pulled in only if the first risk scan or "
+            "the transaction value justifies a deeper inspection pass."
+        )
+    else:
+        required = list(_CORE_TOOLS) + ["check_roaming_status"]
+        deferred = ["get_congestion_insights"]
+        rationale = (
+            f"Value-movement {transaction_type or 'payment'} flow: identity, geo presence, roaming "
+            "and reachability are required evidence for settlement. Congestion is deferred as a "
+            "secondary contextual signal and pulled in only when the risk scan or value warrants it."
+        )
+
+    return {
+        "transaction_type": transaction_type,
+        "low_touch": low_touch,
+        "required": required,
+        "deferred": deferred,
+        "rationale": rationale,
+    }
+
 
 def _patch_litellm_for_crewai() -> None:
+    global litellm
+    if litellm is None:
+        try:
+            import litellm as loaded_litellm
+
+            litellm = loaded_litellm
+        except Exception:
+            return
     if litellm is None or getattr(litellm, "_aegistel_patched", False):
         return
 
@@ -99,10 +200,6 @@ def _patch_litellm_for_crewai() -> None:
 
     litellm.completion = _safe_completion
     litellm._aegistel_patched = True
-
-
-_patch_litellm_for_crewai()
-
 
 def _find_tool_result(tool_results: List[Dict[str, Any]], *keys: str) -> Dict[str, Any] | None:
     """Return the first tool payload that contains one of the requested key names."""
@@ -137,6 +234,8 @@ def synthesize_specialist_assessment(
     tool_results: List[Dict[str, Any]],
     memory_context: List[Dict[str, Any]],
     enforce_roaming_policy: bool = False,
+    required_signals: Optional[List[str]] = None,
+    plan_detail: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Convert tool output into a grounded multi-agent fraud assessment."""
     msisdn = request_context.get("msisdn", "")
@@ -144,6 +243,13 @@ def synthesize_specialist_assessment(
     request_qod = bool(request_context.get("request_qod"))
     enforce_roaming_policy = bool(enforce_roaming_policy)
     transaction_type = str(request_context.get("transaction_type", "")).upper()
+
+    # Signals this plan depends on. Defaults to the full core set (failsafe),
+    # so direct/no-plan callers keep the historic conservative guardrail.
+    # Only *required* signals trip the fail-safe gate; deferred optional
+    # signals that were deliberately not gathered are not treated as gaps.
+    DEFAULT_REQUIRED_SIGNALS = ["sim", "number_verification", "location", "roaming", "reachability"]
+    required_signal_keys = set(required_signals or DEFAULT_REQUIRED_SIGNALS)
 
     sim_result = _find_tool_result(tool_results, "swapped")
     location_result = _find_tool_result(tool_results, "verificationResult")
@@ -324,16 +430,21 @@ def synthesize_specialist_assessment(
         }
     )
 
+    # A roaming signal only contributes to risk when the plan requires it OR it
+    # was actually gathered (a deferred optional signal that was later pulled in
+    # and errored must be treated as evidence, not silently ignored).
+    roaming_expected = "roaming" in required_signal_keys or roaming_result is not None
+
     risk_signal = (
         sim_swapped
-        or sim_unknown
+        or (sim_unknown and "sim" in required_signal_keys)
         or verification_result in {"FALSE", "PARTIAL", "UNKNOWN"}
-        or roaming_status == "INTERNATIONAL_ROAMING"
-        or roaming_unknown
+        or (roaming_expected and roaming_status == "INTERNATIONAL_ROAMING")
+        or (roaming_expected and roaming_unknown)
         or unreachable_risk
-        or reachability_unknown
+        or (reachability_unknown and "reachability" in required_signal_keys)
         or tx_high_risk
-        or number_verification_risk
+        or (number_verification_risk and "number_verification" in required_signal_keys)
     )
     if memory_hits:
         trace_items.append(
@@ -352,15 +463,17 @@ def synthesize_specialist_assessment(
         risk_signal = True
 
     unavailable_signals: List[str] = []
-    if sim_unknown:
+    # Only plan-required signals gate the verdict. A deferred optional signal
+    # that was deliberately not gathered is not a data gap and must not escalate.
+    if sim_unknown and "sim" in required_signal_keys:
         unavailable_signals.append("SIM swap status")
-    if number_verification_unknown:
+    if number_verification_unknown and "number_verification" in required_signal_keys:
         unavailable_signals.append("Number Verification")
-    if location_unknown:
+    if location_unknown and "location" in required_signal_keys:
         unavailable_signals.append("Location Verification")
-    if roaming_unknown:
+    if roaming_unknown and "roaming" in required_signal_keys:
         unavailable_signals.append("Roaming status")
-    if reachability_unknown:
+    if reachability_unknown and "reachability" in required_signal_keys:
         unavailable_signals.append("Device reachability")
 
     if unavailable_signals:
@@ -479,6 +592,18 @@ def synthesize_specialist_assessment(
             "detail": f"risk_score={risk_score} | status={status}",
         }
     )
+
+    if plan_detail:
+        trace_items.insert(
+            0,
+            {
+                "agent": "Orchestration Planner",
+                "action": "TOOL_PLANNING",
+                "thought": plan_detail,
+                "status": "PLANNED",
+                "detail": f"required_signals={','.join(sorted(required_signal_keys))}",
+            },
+        )
 
     return {
         "assessment": {
@@ -879,6 +1004,101 @@ def _model_provider_name(model: str) -> str:
     return "Unknown"
 
 
+_PLANNER_ATTEMPT_BUDGET_S = 2.0
+
+
+def _apply_agent_tool_plan(request_context: Dict[str, Any], policy_plan: Dict[str, Any]) -> Dict[str, Any]:
+    """Let a CrewAI planner choose optional CAMARA calls inside a safe envelope.
+
+    Policy fixes the identity signals required to approve a transaction. The
+    planner may only choose which explicitly deferred contextual signals to
+    gather early; it cannot remove required checks, add tools, or alter the
+    fraud rules. Any planner failure visibly falls back to the policy plan.
+    """
+    plan = dict(policy_plan)
+    candidates = list(policy_plan["deferred"])
+    plan.update(
+        {
+            "initial_optional": [],
+            "planning_mode": "policy_fallback",
+            "planner_model": None,
+            "planner_provider": None,
+            "planner_reason": "No approved model planner was available; using the bounded policy plan.",
+        }
+    )
+    if not request_context.get("agent_planning") or request_context.get("force_deterministic") or not candidates:
+        return plan
+
+    models = [
+        model for model in MODEL_CHAIN["auditor"]
+        if _model_provider_available(model) and not _model_in_cooldown(model)
+    ]
+    if not models:
+        return plan
+    if not _ensure_crewai():
+        plan["planner_reason"] = "CrewAI planner is unavailable; using the bounded policy plan."
+        return plan
+    model = models[0]
+    prompt = (
+        "You are the AegisTel CAMARA Orchestration Planner. Select zero or more optional telecom "
+        "signals to gather before the first fraud decision. You may select ONLY from the candidate list. "
+        "Required signals are immutable and already policy-enforced. Prefer early contextual signals when "
+        "the transaction type, amount, or declared policy makes them useful. Return JSON only: "
+        '{"selected_optional_tools":["tool"],"rationale":"short evidence-collection reason"}.\n\n'
+        f"Transaction type: {request_context.get('transaction_type')}\n"
+        f"Amount: {request_context.get('amount')}\n"
+        f"QoD preference: {bool(request_context.get('request_qod'))}\n"
+        f"Required tools: {policy_plan['required']}\n"
+        f"Candidate optional tools: {candidates}"
+    )
+    try:
+        planner = Agent(
+            role="CAMARA Orchestration Planner",
+            goal="Select the smallest safe set of optional CAMARA signals before a fraud decision.",
+            backstory="You are a telecom fraud orchestrator. You optimize evidence collection but never weaken mandatory identity checks.",
+            llm=model,
+            verbose=False,
+            allow_delegation=False,
+        )
+        task = Task(description=prompt, expected_output="Strict JSON plan with selected_optional_tools and rationale.", agent=planner)
+        crew = Crew(agents=[planner], tasks=[task], verbose=False)
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
+            output = pool.submit(crew.kickoff).result(timeout=_PLANNER_ATTEMPT_BUDGET_S)
+        except TimeoutError:
+            pool.shutdown(wait=False, cancel_futures=True)
+            plan["planner_reason"] = "CrewAI planner timed out; using the bounded policy plan."
+            return plan
+        except Exception as exc:
+            pool.shutdown(wait=False, cancel_futures=True)
+            plan["planner_reason"] = f"CrewAI planner unavailable ({type(exc).__name__}); using the bounded policy plan."
+            return plan
+        else:
+            pool.shutdown(wait=True)
+        parsed = _parse_structured_output(str(output))
+        selected = parsed.get("selected_optional_tools") if isinstance(parsed, dict) else []
+        if not isinstance(selected, list):
+            plan["planner_reason"] = "CrewAI planner returned an invalid tool list; using the bounded policy plan."
+            return plan
+        selected = [tool for tool in candidates if tool in {str(item) for item in selected}]
+        rationale = str(parsed.get("rationale") or "Selected contextual signals within the policy allowlist.")[:500]
+        plan.update(
+            {
+                "initial_optional": selected,
+                "deferred": [tool for tool in candidates if tool not in selected],
+                "planning_mode": "crewai",
+                "planner_model": model,
+                "planner_provider": _model_provider_name(model),
+                "planner_reason": rationale,
+                "rationale": f"{policy_plan['rationale']} CrewAI planner selected early context: {selected or 'none'}. {rationale}",
+            }
+        )
+        return plan
+    except Exception as exc:
+        plan["planner_reason"] = f"CrewAI planner unavailable ({type(exc).__name__}); using the bounded policy plan."
+        return plan
+
+
 def _build_task_description(
     role: str,
     executed_tool_results: List[Dict[str, Any]],
@@ -1005,60 +1225,95 @@ def run_specialist_crew(
         geofence_radius_meters = 5000
     enforce_roaming_policy = bool(metadata.get("enforce_roaming_policy"))
 
-    # The telemetry tools are independent SDK calls. Running them concurrently
-    # removes the serial latency without changing which tools run. QoD is
-    # provisioned separately below, after the deterministic risk signal has
-    # been computed, so that high-risk flows auto-provision a session even when
-    # the amount is low and the caller did not explicitly request one.
-    jobs: List[tuple[str, Any]] = [
-        ("check_sim_swap", lambda: _run_tool_payload("check_sim_swap", check_sim_swap, msisdn=msisdn)),
-        (
-            "verify_location",
-            lambda: _run_tool_payload(
-                "verify_location",
-                verify_location,
-                msisdn=msisdn,
-                latitude=latitude,
-                longitude=longitude,
-                radius=geofence_radius_meters,
-            ),
-        ),
-        ("check_roaming_status", lambda: _run_tool_payload("check_roaming_status", check_roaming_status, msisdn=msisdn)),
-        ("check_device_reachability", lambda: _run_tool_payload("check_device_reachability", check_device_reachability, msisdn=msisdn)),
-        ("verify_number", lambda: _run_tool_payload("verify_number", verify_number, msisdn=msisdn)),
-        ("get_congestion_insights", lambda: _run_tool_payload("get_congestion_insights", get_congestion_insights, msisdn=msisdn)),
-    ]
+    # Bounded planning: decide which base CAMARA signals this transaction needs
+    # before calling anything. The plan is deterministic per transaction type,
+    # surfaced in the trace, and drives both which tools run now (required) and
+    # which are deferred to a risk-aware second pass (optional). The fail-safe
+    # gate in synthesis treats a missing *required* signal as an escalation, so
+    # a plan can never silently weaken the guardrails by skipping evidence it
+    # declared necessary.
+    plan = _apply_agent_tool_plan(request_context, plan_tool_calls(request_context))
+    required_tools = list(plan["required"]) + list(plan["initial_optional"])
+    deferred_tools = list(plan["deferred"])
+    plan_signal_keys = [TOOL_SIGNAL_KEY[name] for name in required_tools]
 
-    logger.info("verify_location called with radius=%s for msisdn=%s", geofence_radius_meters, msisdn)
-    _emit("tools:start", count=len(jobs))
-    with ThreadPoolExecutor(max_workers=len(jobs)) as _pool:
-        _futures = [(_name, _pool.submit(_fn)) for _name, _fn in jobs]
-        executed_tool_results = []
-        for _name, _fut in _futures:
-            started = time.monotonic()
-            _payload = _fut.result()
-            duration_ms = round((time.monotonic() - started) * 1000, 1)
-            if isinstance(_payload, dict):
-                _payload = dict(_payload)
-                _payload["duration_ms"] = duration_ms
-            executed_tool_results.append(_payload)
-            _emit(
-                "tool:done",
-                tool=_name,
-                source=_payload.get("source", "unknown") if isinstance(_payload, dict) else "unknown",
-                status="ok" if isinstance(_payload, dict) and _payload.get("status_code", 200) < 400 else "error",
-                duration_ms=duration_ms,
+    def _build_job(name: str) -> tuple[str, Any]:
+        if name == "check_sim_swap":
+            return (name, lambda: _run_tool_payload("check_sim_swap", check_sim_swap, msisdn=msisdn))
+        if name == "verify_location":
+            return (
+                name,
+                lambda: _run_tool_payload(
+                    "verify_location",
+                    verify_location,
+                    msisdn=msisdn,
+                    latitude=latitude,
+                    longitude=longitude,
+                    radius=geofence_radius_meters,
+                ),
             )
-    _t_tools = time.monotonic()
+        if name == "check_roaming_status":
+            return (name, lambda: _run_tool_payload("check_roaming_status", check_roaming_status, msisdn=msisdn))
+        if name == "check_device_reachability":
+            return (name, lambda: _run_tool_payload("check_device_reachability", check_device_reachability, msisdn=msisdn))
+        if name == "verify_number":
+            return (name, lambda: _run_tool_payload("verify_number", verify_number, msisdn=msisdn))
+        if name == "get_congestion_insights":
+            return (name, lambda: _run_tool_payload("get_congestion_insights", get_congestion_insights, msisdn=msisdn))
+        raise ValueError(f"Unknown planned tool {name}")
 
-    # Pre-compute the deterministic risk signal from the base telemetry so the
-    # QoD decision can react to actual risk (auto-provision on risk), not just
-    # to the amount threshold or an explicit caller flag.
+    def _run_tools(jobs: List[tuple[str, Any]]) -> List[Dict[str, Any]]:
+        with ThreadPoolExecutor(max_workers=len(jobs) or 1) as _pool:
+            _futures = [(_name, _pool.submit(_fn)) for _name, _fn in jobs]
+            results = []
+            for _name, _fut in _futures:
+                started = time.monotonic()
+                _payload = _fut.result()
+                duration_ms = round((time.monotonic() - started) * 1000, 1)
+                if isinstance(_payload, dict):
+                    _payload = dict(_payload)
+                    _payload["duration_ms"] = duration_ms
+                results.append(_payload)
+                _emit(
+                    "tool:done",
+                    tool=_name,
+                    source=_payload.get("source", "unknown") if isinstance(_payload, dict) else "unknown",
+                    status="ok" if isinstance(_payload, dict) and _payload.get("status_code", 200) < 400 else "error",
+                    duration_ms=duration_ms,
+                )
+        return results
+
+    planned_jobs = [_build_job(name) for name in required_tools]
+    logger.info(
+        "verify_location called with radius=%s for msisdn=%s (planned tools: %s)",
+        geofence_radius_meters,
+        msisdn,
+        ",".join(required_tools),
+    )
+    _emit(
+        "plan",
+        transaction_type=plan["transaction_type"],
+        required=required_tools,
+        early_optional=plan["initial_optional"],
+        deferred=deferred_tools,
+        rationale=plan["rationale"],
+        low_touch=plan["low_touch"],
+        mode=plan["planning_mode"],
+        planner_model=plan["planner_model"],
+        planner_provider=plan["planner_provider"],
+    )
+    _emit("tools:start", count=len(planned_jobs), planned=required_tools, deferred=deferred_tools)
+    executed_tool_results = _run_tools(planned_jobs)
+
+    # Pre-compute the deterministic risk signal from the planned base telemetry
+    # so the QoD/expansion decisions react to actual risk (auto-provision on
+    # risk), not just to the amount threshold or an explicit caller flag.
     risk_scan = synthesize_specialist_assessment(
         request_context,
         executed_tool_results,
         memory_context,
         enforce_roaming_policy=enforce_roaming_policy,
+        required_signals=plan_signal_keys,
     )
     risk_signal = risk_scan["assessment"].get("status") != "APPROVED"
     _emit(
@@ -1068,23 +1323,75 @@ def run_specialist_crew(
         signal_count=len(risk_scan.get("trace", [])),
     )
 
-    # QoD is a consequence of risk or of a high-value flow, never of the
-    # auto-provision flag alone: a clean low-amount transaction must not show a
-    # "QoD REQUESTED" step-up next to an APPROVED verdict.
-    if amount >= 25000 or risk_signal:
-        _emit("qod:start", reason="amount_threshold" if amount >= 25000 else "risk_signal")
-        executed_tool_results.append(_run_tool_payload("create_qod_session", create_qod_session, msisdn=msisdn))
-        _emit("qod:done", status="ok")
+    # Bounded risk-context re-plan: deferred optional signals are pulled in
+    # exactly once when the first scan found risk, the transaction is high
+    # value, or the subscriber has incident history. This expansion can only ADD
+    # evidence, never remove a required guardrail, so it stays deterministic.
+    if deferred_tools and (risk_signal or amount >= 25000 or memory_context):
+        _emit(
+            "plan:expand",
+            tools=deferred_tools,
+            reason="risk_context" if risk_signal else ("amount_threshold" if amount >= 25000 else "incident_history"),
+        )
+        executed_tool_results.extend(_run_tools([_build_job(name) for name in deferred_tools]))
+        risk_scan = synthesize_specialist_assessment(
+            request_context,
+            executed_tool_results,
+            memory_context,
+            enforce_roaming_policy=enforce_roaming_policy,
+            required_signals=plan_signal_keys,
+        )
+        risk_signal = risk_scan["assessment"].get("status") != "APPROVED"
+        _emit(
+            "synthesis:done",
+            status=risk_scan["assessment"].get("status"),
+            risk_score=risk_scan["assessment"].get("risk_score"),
+            signal_count=len(risk_scan.get("trace", [])),
+        )
+
+    _t_tools = time.monotonic()
+
+    # QoD is NEVER provisioned during the decision. Creating a QoD session
+    # borrows a chargeable shared network resource, so it is a post-decision,
+    # consensual action. The verdict may only RECOMMEND a QoD step-up here; the
+    # session itself is created by an explicit confirmed action
+    # (POST /api/v1/audit/qod/provision), which additionally requires an
+    # authenticated client and the AEGISTEL_QOD_POLICY_ENABLED bank-policy flag.
+    # The `request_qod_slice` caller flag is intent metadata only — it never
+    # provisions anything on its own.
 
     deterministic_output = synthesize_specialist_assessment(
         request_context,
         executed_tool_results,
         memory_context,
         enforce_roaming_policy=enforce_roaming_policy,
+        required_signals=plan_signal_keys,
+        plan_detail=plan["rationale"],
     )
+    # Replace the generic deterministic planning trace with the actual planner
+    # outcome so the UI can distinguish a model decision from policy fallback.
+    deterministic_output["trace"] = [
+        {
+            "agent": "CAMARA Orchestration Planner",
+            "action": "CREWAI_TOOL_PLANNING" if plan["planning_mode"] == "crewai" else "POLICY_TOOL_PLANNING",
+            "thought": plan["rationale"],
+            "status": "EXECUTED" if plan["planning_mode"] == "crewai" else "FALLBACK",
+            "model": plan["planner_model"],
+            "provider": plan["planner_provider"],
+            "detail": f"required_signals={','.join(plan_signal_keys)} | early_optional={','.join(plan['initial_optional']) or 'none'} | deferred={','.join(deferred_tools)} | {plan['planner_reason']}",
+        }
+    ] + [
+        item for item in deterministic_output.get("trace", []) if item.get("action") != "TOOL_PLANNING"
+    ]
     fallback_trace = deterministic_output.get("trace", [])
     failure_reason = "CrewAI not executed"
     _t_deterministic = time.monotonic()
+
+    def _qod_recommended(assessment: Dict[str, Any]) -> bool:
+        # QoD only closes a STEP_UP_REQUIRED verdict. REJECTED/BLOCKED means a
+        # threat is confirmed and MANUAL_REVIEW is human-only, so none of those
+        # get a QoD recommendation.
+        return assessment.get("status") == "STEP_UP_REQUIRED"
 
     def _timing(llm_ms: float) -> Dict[str, Any]:
         return {
@@ -1129,6 +1436,21 @@ def run_specialist_crew(
             "used_fallback": True,
             "timing": _timing(0.0),
             "providers_reachable": reachable,
+            "qod_recommended": _qod_recommended(deterministic_output["assessment"]),
+        }
+
+    if not _ensure_crewai():
+        logger.warning("CrewAI could not load; using deterministic specialist fallback")
+        _emit("llm:fallback", reason="crewai_unavailable")
+        return {
+            "assessment": deterministic_output["assessment"],
+            "tool_results": executed_tool_results,
+            "trace": fallback_trace,
+            "raw_output": "Deterministic fallback used because the CrewAI runtime is unavailable.",
+            "used_fallback": True,
+            "timing": _timing(0.0),
+            "providers_reachable": reachable,
+            "qod_recommended": _qod_recommended(deterministic_output["assessment"]),
         }
 
     def _available_models() -> tuple[list[str], list[str]]:
@@ -1169,6 +1491,7 @@ def run_specialist_crew(
             "trace": fallback_trace,
             "raw_output": "Deterministic fallback used because the specialist/auditor model chain could not be built.",
             "used_fallback": True,
+            "qod_recommended": _qod_recommended(deterministic_output["assessment"]),
         }
 
     last_error: Exception | None = None
@@ -1290,6 +1613,15 @@ def run_specialist_crew(
                 assessment, mismatch_reasons = _reconcile_crew_output(parsed_output, deterministic_output)
                 trace = [
                     {
+                        "agent": "Orchestration Planner",
+                        "action": "CREWAI_TOOL_PLANNING" if plan["planning_mode"] == "crewai" else "POLICY_TOOL_PLANNING",
+                        "thought": plan["rationale"],
+                        "status": "EXECUTED" if plan["planning_mode"] == "crewai" else "FALLBACK",
+                        "model": plan["planner_model"],
+                        "provider": plan["planner_provider"],
+                        "detail": f"required_signals={','.join(plan_signal_keys)} | early_optional={','.join(plan['initial_optional']) or 'none'} | deferred={','.join(deferred_tools)} | {plan['planner_reason']}",
+                    },
+                    {
                         "agent": "Security Specialist",
                         "action": "CREWAI_SECURITY_REVIEW",
                         "thought": "CrewAI security specialist executed a model-backed risk review for the provided MSISDN.",
@@ -1333,6 +1665,7 @@ def run_specialist_crew(
                     "trace": trace,
                     "raw_output": str(crew_output),
                     "used_fallback": False,
+                    "qod_recommended": _qod_recommended(assessment),
                 }
         except _LLMBudgetExceededError as exc:
             last_error = exc
@@ -1398,4 +1731,5 @@ def run_specialist_crew(
         "used_fallback": True,
         "timing": _timing(time.monotonic() - _t_deterministic),
         "providers_reachable": reachable,
+        "qod_recommended": _qod_recommended(deterministic_output["assessment"]),
     }

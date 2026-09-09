@@ -2,8 +2,9 @@ import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 logger = logging.getLogger(__name__)
 
@@ -44,11 +45,18 @@ class LocationInput(BaseModel):
 
 
 class AuditRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     msisdn: str = Field(..., pattern=MSISDN_PATTERN, description="Subscriber MSISDN in E.164 format, e.g. +966500000001")
     amount: float = Field(..., gt=0, le=1_000_000_000, description="Transaction amount in local currency units")
     transaction_type: str = "WIRE_TRANSFER"
     current_location: LocationInput
     request_qod_slice: bool = False
+    # NOTE: there is intentionally NO tenant field here. The tenant namespace is
+    # derived server-side from the API client's credential (see `_resolve_tenant`
+    # in main.py) and is never accepted from public JSON. `extra="forbid"` makes
+    # a client that tries to smuggle `tenant_id` in the body fail loudly (422)
+    # instead of being silently ignored.
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("transaction_type")
@@ -121,11 +129,18 @@ class NokiaApiTelemetry(BaseModel):
 
 
 class AuditResponse(BaseModel):
+    audit_id: UUID = Field(default_factory=uuid4)
     msisdn: str
     amount: float
     transaction_type: str
+    tenant_id: str = "demo"
     risk_score: str
     status: str
+    # A recommendation ONLY. This decision pipeline never provisions a QoD
+    # session; it only signals that a step-up could be closed with one. The
+    # session itself is created by an explicit, authenticated, policy-gated
+    # confirm action (POST /api/v1/audit/qod/provision).
+    qod_recommended: bool = False
     telemetry: NokiaApiTelemetry
     reasoning: str
     recommended_action: str
@@ -133,3 +148,21 @@ class AuditResponse(BaseModel):
     used_fallback: bool = False
     raw_output: Optional[str] = None
     diagnostics: Dict[str, Any] = Field(default_factory=dict)
+
+
+class QoDProvisionRequest(BaseModel):
+    """Explicit, consented request to provision a QoD session for a MSISDN.
+
+    Provisioning a QoD session lends a chargeable shared network resource to a
+    subscriber for a bounded duration, so this is deliberately a SEPARATE action
+    from the audit decision (which only returns `qod_recommended`). The endpoint
+    additionally requires an authenticated client (operator admin key or tenant
+    API key) and the server-side bank-policy flag AEGISTEL_QOD_POLICY_ENABLED.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    audit_id: UUID = Field(..., description="Fresh tenant-scoped audit that recommended QoD.")
+    msisdn: str = Field(..., pattern=MSISDN_PATTERN, description="Subscriber MSISDN in E.164 format.")
+    profile: str = Field(default="QOS_E", description="CAMARA QoS profile label (e.g. QOS_E).")
+    duration_seconds: int = Field(default=3600, ge=60, le=86400, description="Bounded session duration in seconds.")

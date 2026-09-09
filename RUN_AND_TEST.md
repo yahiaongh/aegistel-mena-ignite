@@ -36,12 +36,12 @@ judge/reviewer creates their own before running. The backend loads keys from a
 | File key | Where to create it | Needed for | Mandatory? |
 |---|---|---|---|
 | `GROQ_API_KEY` | https://console.groq.com — API Keys | Primary LLM (specialist + auditor + memory) | **Yes** (one of GROQ/OpenRouter/Gemini) |
-| `GOOGLE_API_KEY` | https://aistudio.google.com/apikey (create a key with the Generative Language API) | QDRANT memory embeddings + memory extraction | **Yes** (memory feeds the verdict) |
-| `QDRANT_API_KEY` + `QDRANT_URL` | https://qdrant.tech — create/host a cluster, copy its API key & URL | Vector store for memory context | **Yes** (memory is mandatory) |
+| `GOOGLE_API_KEY` | https://aistudio.google.com/apikey (create a key with the Generative Language API) | LLM + (remote-only) memory embeddings/extraction | **Yes** (LLM for memory/crew; remote memory features need `AEGISTEL_LIVE_MEMORY=1`) |
+| `QDRANT_API_KEY` + `QDRANT_URL` | https://qdrant.tech — create/host a cluster, copy its API key & URL | Optional remote vector store for memory context | No — memory defaults to a local JSONL store; Qdrant is used only when `AEGISTEL_LIVE_MEMORY=1` |
 | `NOKIA_NAC_API_KEY` | Nokia Network-as-Code on RapidAPI (host `network-as-code.nokia.rapidapi.com`) | The 7 CAMARA telecom checks | No — falls back to sandbox signals |
 | `OPENROUTER_API_KEY` | https://openrouter.ai/keys | LLM fallback tier | Optional |
 | `OPENAI_API_KEY` / `CEREBRAS_API_KEY` | platform providers | LLM fallback tiers | Optional |
-| `DEEPGRAM_API_KEY` | https://deepgram.com | Neural TTS | Optional — empty falls back to `edge_tts` |
+| `DEEPGRAM_API_KEY` | https://deepgram.com | Neural TTS | Optional — if unset, `/api/audio/tts` fails closed (`503` + hint) and the dashboard uses the browser's local speech |
 
 **2. Create the root `.env` from the template, then fill it in:**
 
@@ -55,9 +55,10 @@ cp backend/.env.example .env
 > file must be at the root, *not* inside `backend/`. `.gitignore` already
 > excludes it, so it will never be committed.
 
-**3. Minimum for a full, live verdict:** `GROQ_API_KEY` (or another LLM key),
-`GOOGLE_API_KEY`, `QDRANT_API_KEY` and `QDRANT_URL`, else memory context is
-skipped and the app shows `used_fallback`. `NOKIA_NAC_API_KEY` is optional —
+**3. Minimum for a full, live verdict:** `GROQ_API_KEY` (or another LLM key) and
+`GOOGLE_API_KEY`. Memory **defaults to a local JSONL store** and needs no external
+backing; the optional `QDRANT_API_KEY` + `QDRANT_URL` enable remote semantic
+memory only when `AEGISTEL_LIVE_MEMORY=1`. `NOKIA_NAC_API_KEY` is optional —
 without it the CAMARA checks use the built-in sandbox signals.
 
 You only need to do this **once per machine**. The steps below then run the app.
@@ -113,8 +114,9 @@ docker run -p 7860:7860 \
 
 Create a **Web Service** from this repo, branch `main`, runtime Docker,
 Dockerfile path `Dockerfile.hf`, and set the required env vars as secrets
-(`GROQ_API_KEY`, `GOOGLE_API_KEY`, `NOKIA_NAC_API_KEY`, `QDRANT_URL`,
-`QDRANT_API_KEY`; others optional — see `DEPLOYMENTS.md`). Then
+(`GROQ_API_KEY`, `GOOGLE_API_KEY`, `NOKIA_NAC_API_KEY`; `QDRANT_URL` +
+`QDRANT_API_KEY` only when enabling remote memory with `AEGISTEL_LIVE_MEMORY=1`;
+others optional — see `DEPLOYMENTS.md`). Then
 `https://<service>.onrender.com/api/health`.
 
 Free tier sleeps after ~15 min idle; the first request can take 30–60s to
@@ -140,7 +142,7 @@ touches a live model or the telecom SDK:
 
 ```bash
 cd backend
-../venv/bin/python -m pytest tests/ -q     # 119 offline tests + 1 opt-in live test
+../venv/bin/python -m pytest tests/ -q     # 142 offline tests + 1 opt-in live test
 
 # Opt-in live behavioral eval (needs real model keys; LLM-vs-deterministic gate):
 ../venv/bin/python -m pytest tests/test_behavioral_eval.py --run-live
@@ -155,9 +157,9 @@ cd backend
 > to the local store. Verdicts therefore remain honest even under quota pressure;
 > they just may not reflect the top-tier model.
 
-`backend/pytest.ini` ships module-scoped filters that silence unrelated
-third-party deprecation warnings (CrewAI, Starlette), so a clean run reports
-zero warnings.
+`backend/pytest.ini` filters unrelated framework warnings. One current
+third-party `httpx` request-encoding deprecation warning may still be reported;
+it does not affect the offline assertions and is tracked for dependency cleanup.
 
 Selective runs (fast, for iteration):
 
@@ -170,8 +172,8 @@ Selective runs (fast, for iteration):
 ### Optional live-LLM end-to-end check
 
 See `submission/E2E_REAL_LLM_TEST.md` for the full procedures (real audit via
-`POST /api/v1/audit`, memory persistence with QDRANT + GOOGLE keys, and TTS
-verification).
+`POST /api/v1/audit`, memory persistence — local JSONL by default, Qdrant only
+with `AEGISTEL_LIVE_MEMORY=1` — and TTS verification).
 
 ---
 

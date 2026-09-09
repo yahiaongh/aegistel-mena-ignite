@@ -12,18 +12,7 @@ from app import main as main_module
 
 @pytest.fixture
 def client(monkeypatch):
-    class FakeCommunicate:
-        def __init__(self, text, voice, rate, pitch):
-            self.text = text
-            self.voice = voice
-            self.rate = rate
-            self.pitch = pitch
-
-        async def stream(self):
-            yield {"type": "audio", "data": b"audio-bytes"}
-
     monkeypatch.setattr(main_module.settings, "DEEPGRAM_API_KEY", "fake-key")
-    monkeypatch.setattr(main_module, "edge_tts", types.SimpleNamespace(Communicate=FakeCommunicate))
 
     requests_module = types.ModuleType("requests")
 
@@ -39,8 +28,9 @@ def client(monkeypatch):
 
 
 def test_tts_uses_deepgram_and_never_silently_degrades_when_configured(client):
-    # A configured-but-failing Deepgram key must be surfaced, NOT silently
-    # swapped for edge_tts — the demo voice must be exactly what was configured.
+    # A configured-but-failing Deepgram key must be surfaced (503), NOT silently
+    # swapped for another voice provider — the demo voice is exactly what was
+    # configured.
     response = client.post(
         "/api/audio/tts",
         data={"text": "hello", "voice": "ar-EG-ShakirNeural"},
@@ -75,19 +65,15 @@ def test_tts_returns_deepgram_audio_on_success(monkeypatch):
 def test_tts_normalizes_phone_number_before_dispatch(monkeypatch):
     captured = {}
 
-    class FakeCommunicate:
-        def __init__(self, text, voice, rate, pitch):
-            captured["text"] = text
-            self.text = text
-            self.voice = voice
-            self.rate = rate
-            self.pitch = pitch
+    class WorkingPost:
+        def __call__(self, url, headers=None, json=None, timeout=None):
+            captured["text"] = (json or {}).get("text", "")
+            return types.SimpleNamespace(raise_for_status=lambda: None, status_code=200, content=b"deepgram-audio")
 
-        async def stream(self):
-            yield {"type": "audio", "data": b"audio-bytes"}
-
-    monkeypatch.setattr(main_module.settings, "DEEPGRAM_API_KEY", "")
-    monkeypatch.setattr(main_module, "edge_tts", types.SimpleNamespace(Communicate=FakeCommunicate))
+    requests_module = types.ModuleType("requests")
+    requests_module.post = WorkingPost()
+    monkeypatch.setitem(sys.modules, "requests", requests_module)
+    monkeypatch.setattr(main_module.settings, "DEEPGRAM_API_KEY", "valid-key")
 
     with TestClient(main_module.app) as test_client:
         response = test_client.post(
@@ -99,3 +85,16 @@ def test_tts_normalizes_phone_number_before_dispatch(monkeypatch):
     assert captured["text"] != "+99999991001"
     assert "plus" in captured["text"].lower()
     assert "9" in captured["text"]
+
+
+def test_tts_fails_closed_when_no_deepgram_key(monkeypatch):
+    monkeypatch.setattr(main_module.settings, "DEEPGRAM_API_KEY", "")
+
+    with TestClient(main_module.app) as test_client:
+        response = test_client.post(
+            "/api/audio/tts",
+            data={"text": "hello", "voice": "ar-EG-ShakirNeural"},
+        )
+
+    assert response.status_code == 503
+    assert "DEEPGRAM_API_KEY" in response.json()["detail"]

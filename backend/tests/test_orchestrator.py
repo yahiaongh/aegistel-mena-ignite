@@ -38,7 +38,11 @@ def test_demo_msisdn_exposes_documented_risk_signals():
 
     assert result.telemetry.sim_swap_detected is True
     assert result.telemetry.location_verification_match is False
-    assert result.telemetry.qod_session_active is True
+    # QoD is recommendation-only: the decision NEVER provisions a session
+    # (chargeable resource), even for a risky transaction with request_qod_slice
+    # = true. The recommendation is surfaced instead.
+    assert result.telemetry.qod_session_active is False
+    assert result.qod_recommended is True
 
 
 def test_fallback_reasoning_and_trace_are_contextual():
@@ -175,3 +179,122 @@ def test_simulator_subscriber_records_incidents_but_skips_weighting():
     assert clean_result.status == "APPROVED"
     assert clean_result.risk_score == "LOW"
     memory_engine.clear_all_memory()
+
+
+def test_tool_success_flag_tracks_status_and_error():
+    # Evidence integrity: a tool call that errored or returned a failing HTTP
+    # status must be flagged as failed, exactly matching what the payload says,
+    # so the verdict trail is never internally inconsistent.
+    from app.agents.graph_orchestrator import _tool_succeeded
+
+    assert _tool_succeeded({"name": "check_sim_swap", "swapped": False, "status_code": 200}) is True
+    assert _tool_succeeded({"name": "check_sim_swap", "swapped": False, "status_code": 301}) is True
+    assert _tool_succeeded({"name": "verify_number", "status_code": 200}) is True
+    assert _tool_succeeded({"name": "verify_location", "verificationResult": "TRUE"}) is True
+
+    assert _tool_succeeded({"name": "verify_number", "status_code": 401, "error": "Authorization header is missing"}) is False
+    assert _tool_succeeded({"name": "check_sim_swap", "status_code": 503, "source": "LOCAL FALLBACK", "error": "tool execution failed"}) is False
+    assert _tool_succeeded({"name": "check_roaming_status", "status_code": 500}) is False
+    assert _tool_succeeded({"name": "check_roaming_status", "status_code": 400}) is False
+    assert _tool_succeeded({"name": "check_roaming_status", "error": "timeout"}) is False
+
+
+def test_plan_tool_calls_selective_by_transaction_type():
+    from app.agents.crew_specialists import plan_tool_calls
+
+    light = plan_tool_calls({"transaction_type": "P2P_TRANSFER", "amount": 100.0})
+    assert light["low_touch"] is True
+    assert set(light["required"]) == {
+        "check_sim_swap", "verify_number", "verify_location", "check_device_reachability"
+    }
+    assert set(light["deferred"]) == {"check_roaming_status", "get_congestion_insights"}
+    assert light["rationale"]
+
+    wire = plan_tool_calls({"transaction_type": "WIRE_TRANSFER", "amount": 100.0})
+    assert wire["low_touch"] is False
+    assert "check_roaming_status" in wire["required"]
+    assert wire["deferred"] == ["get_congestion_insights"]
+
+
+def test_crewai_planner_can_select_only_policy_deferred_tools(monkeypatch):
+    class FakeAgent:
+        def __init__(self, *args, **kwargs):
+            self.kwargs = kwargs
+
+    class FakeTask:
+        def __init__(self, *args, **kwargs):
+            self.kwargs = kwargs
+
+    class FakeCrew:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def kickoff(self):
+            return '{"selected_optional_tools":["check_roaming_status","not_allowed"],"rationale":"Cross-border payment context."}'
+
+    from app.agents import crew_specialists
+
+    monkeypatch.setattr(crew_specialists, "Agent", FakeAgent)
+    monkeypatch.setattr(crew_specialists, "Task", FakeTask)
+    monkeypatch.setattr(crew_specialists, "Crew", FakeCrew)
+    monkeypatch.setattr(crew_specialists.settings, "GROQ_API_KEY", "test-key")
+
+    policy = crew_specialists.plan_tool_calls({"transaction_type": "P2P_TRANSFER", "amount": 100.0})
+    plan = crew_specialists._apply_agent_tool_plan(
+        {"transaction_type": "P2P_TRANSFER", "amount": 100.0, "agent_planning": True}, policy
+    )
+
+    assert plan["planning_mode"] == "crewai"
+    assert plan["initial_optional"] == ["check_roaming_status"]
+    assert plan["deferred"] == ["get_congestion_insights"]
+    assert set(plan["required"]) == set(policy["required"])
+
+
+def test_planned_optional_signal_absence_does_not_escalate():
+    from app.agents.crew_specialists import synthesize_specialist_assessment
+
+    # Low-touch plan deliberately defers roaming/congestion. Their absence must
+    # NOT trip the fault tolerant gate, which exists for REQUIRED evidence only.
+    req = {"msisdn": "+966500000001", "amount": 100.0, "transaction_type": "P2P_TRANSFER", "request_qod": False}
+    tool_results = [
+        {"name": "check_sim_swap", "swapped": False, "status_code": 200, "source": "Nokia NaC SDK"},
+        {"name": "verify_number", "devicePhoneNumberVerified": True, "status_code": 200, "source": "Nokia NaC SDK"},
+        {"name": "verify_location", "verificationResult": "TRUE", "status_code": 200, "source": "Nokia NaC SDK"},
+        {"name": "check_device_reachability", "reachabilityStatus": "REACHABLE", "status_code": 200, "source": "Nokia NaC SDK"},
+    ]
+    out = synthesize_specialist_assessment(
+        req,
+        tool_results,
+        [],
+        required_signals=["sim", "number_verification", "location", "reachability"],
+        plan_detail="deferred roaming + congestion",
+    )
+    assert out["assessment"]["status"] == "APPROVED"
+    assert out["assessment"]["risk_score"] == "LOW"
+    planners = [t for t in out["trace"] if t["action"] == "TOOL_PLANNING"]
+    assert planners and planners[0]["status"] == "PLANNED"
+    assert planners[0]["agent"] == "Orchestration Planner"
+
+
+def test_missing_required_signal_still_trips_failsafe_with_plan():
+    from app.agents.crew_specialists import synthesize_specialist_assessment
+
+    # WIRE_TRANSFER requires roaming in its plan: an absent roaming signal must
+    # escalate exactly like before. A plan can never weaken the guardrail.
+    req = {"msisdn": "+966500000001", "amount": 100.0, "transaction_type": "WIRE_TRANSFER", "request_qod": False}
+    tool_results = [
+        {"name": "check_sim_swap", "swapped": False, "status_code": 200, "source": "Nokia NaC SDK"},
+        {"name": "verify_number", "devicePhoneNumberVerified": True, "status_code": 200, "source": "Nokia NaC SDK"},
+        {"name": "verify_location", "verificationResult": "TRUE", "status_code": 200, "source": "Nokia NaC SDK"},
+        {"name": "check_device_reachability", "reachabilityStatus": "REACHABLE", "status_code": 200, "source": "Nokia NaC SDK"},
+    ]
+    out = synthesize_specialist_assessment(
+        req,
+        tool_results,
+        [],
+        required_signals=["sim", "number_verification", "location", "roaming", "reachability"],
+        plan_detail="full value-movement plan",
+    )
+    assert out["assessment"]["status"] in {"STEP_UP_REQUIRED", "MANUAL_REVIEW"}
+    assert out["assessment"]["risk_score"] in {"HIGH", "CRITICAL"}
+    assert any(t["action"] == "FAIL_SAFE_GATE" for t in out["trace"])

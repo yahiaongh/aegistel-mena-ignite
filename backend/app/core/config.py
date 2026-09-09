@@ -26,6 +26,24 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     HF_TOKEN: str = ""
     AEGISTEL_ADMIN_KEY: str = ""
+    AEGISTEL_API_RATE_LIMIT_PER_MIN: int = 120
+    AEGISTEL_DEFAULT_TENANT: str = "demo"
+    # Comma-separated "tenant_id=api_key" pairs (e.g. "bank-a=k1,bank-b=k2").
+    # When a client authenticates with one of these keys, the tenant namespace is
+    # derived server-side from the credential and is used to scope memory writes
+    # and reads. Tenant names are NEVER taken from the audit JSON body.
+    AEGISTEL_TENANT_API_KEYS: str = ""
+    # Anonymous callers (no tenant key) are scoped to AEGISTEL_DEFAULT_TENANT
+    # only. Set this to false in production to require a tenant key for every audit.
+    AEGISTEL_ALLOW_ANON_AUDIT: bool = True
+    # Bank policy flag: provisioning a QoD session borrows a chargeable shared
+    # network resource, so the audit decision NEVER provisions one. A session is
+    # only created through POST /api/v1/audit/qod/provision (explicit confirmed
+    # action) AND this flag. Default OFF = QoD is recommendation-only everywhere.
+    AEGISTEL_QOD_POLICY_ENABLED: bool = False
+    # QoD sessions are provisioned only for this server-side application
+    # endpoint. Clients must never select the network destination.
+    AEGISTEL_QOD_SERVICE_IP: str = "233.252.0.2"
     LITELLM_DROP_PARAMS: bool = True
     APP_ENV: str = "development"
     PORT: int = 8000

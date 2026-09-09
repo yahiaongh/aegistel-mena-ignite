@@ -80,7 +80,7 @@ def test_stream_result_matches_non_stream_audit():
 
 
 def test_stream_error_event_on_failure(monkeypatch):
-    async def boom(request, progress_callback=None):
+    async def boom(request, progress_callback=None, tenant_id=None):
         raise RuntimeError("quota exhausted")
 
     from app import main as main_module
@@ -101,3 +101,60 @@ def test_stream_error_event_on_failure(monkeypatch):
     error_payload = next(payload for name, payload in frames if name == "error")
     assert error_payload["type"] == "RuntimeError"
     assert "quota exhausted" in error_payload["error"]
+
+def test_plan_event_shows_plan_and_only_planned_tools_run():
+    frames = _stream_audit(
+        {
+            "msisdn": "+99999991001",
+            "amount": 100,
+            "transaction_type": "P2P_TRANSFER",
+            "current_location": {"latitude": 24.7, "longitude": 46.7},
+            "metadata": {"_force_deterministic": True},
+        }
+    )
+    progress_types = [payload.get("type") for name, payload in frames if name == "progress"]
+    assert "plan" in progress_types
+    plan = next(payload for name, payload in frames if name == "progress" and payload.get("type") == "plan")
+    assert set(plan["deferred"]) == {"check_roaming_status", "get_congestion_insights"}
+    assert "check_roaming_status" not in plan["required"]
+
+    # A clean low-value convenience flow stays on its initial plan: no
+    # expansion, no deferred roaming/congestion, no QoD step-up.
+    assert "plan:expand" not in progress_types
+    tool_names = [payload["tool"] for name, payload in frames if name == "progress" and payload.get("type") == "tool:done"]
+    assert "check_roaming_status" not in tool_names
+    assert "get_congestion_insights" not in tool_names
+    assert "check_sim_swap" in tool_names
+    assert "verify_number" in tool_names
+    assert "create_qod_session" not in tool_names
+
+    result = next(payload for name, payload in frames if name == "result")
+    actions = {item["action"] for item in result["agent_trace"]}
+    assert "POLICY_TOOL_PLANNING" in actions
+    assert result["status"] == "APPROVED"
+    assert result["risk_score"] == "LOW"
+
+
+def test_plan_expands_to_deferred_signals_on_risk():
+    frames = _stream_audit(
+        {
+            "msisdn": "+99999991000",
+            "amount": 120000,
+            "transaction_type": "WIRE_TRANSFER",
+            "current_location": {"latitude": 24.7, "longitude": 46.7},
+            "metadata": {"_force_deterministic": True},
+        }
+    )
+    progress_types = [payload.get("type") for name, payload in frames if name == "progress"]
+    assert "plan" in progress_types
+    assert "plan:expand" in progress_types
+    tool_names = [payload["tool"] for name, payload in frames if name == "progress" and payload.get("type") == "tool:done"]
+    assert "check_roaming_status" in tool_names
+    assert "get_congestion_insights" in tool_names
+    # Risk is surfaced as a QoD RECOMMENDATION, not auto-provisioning.
+    assert "qod:recommended" in progress_types
+    assert "qod:start" not in progress_types
+    result = next(payload for name, payload in frames if name == "result")
+    assert result["status"] in {"STEP_UP_REQUIRED", "BLOCKED", "MANUAL_REVIEW"}
+    assert result["qod_recommended"] is True
+    assert result["telemetry"]["qod_session_active"] is False

@@ -86,19 +86,32 @@ web service with `runtime: docker`, `dockerfilePath: ./Dockerfile.hf`,
 2. **New → Blueprint** → select this repository (`yahiaongh/aegistel-mena-ignite`).
 3. Render reads `render.yaml`, prompts for each `sync: false` env var — paste
    the values from your root `.env` (`GROQ_API_KEY`, `GOOGLE_API_KEY`,
-   `QDRANT_URL`, `QDRANT_API_KEY`, and optionally `OPENROUTER_API_KEY`,
-   `NOKIA_NAC_API_KEY`, `DEEPGRAM_API_KEY`). For the feedback readback,
+   `NOKIA_NAC_API_KEY`, `DEEPGRAM_API_KEY`, and optionally `OPENROUTER_API_KEY`;
+   add `QDRANT_URL`/`QDRANT_API_KEY` only if enabling remote memory with
+   `AEGISTEL_LIVE_MEMORY=1`). For the feedback readback,
    `AEGISTEL_ADMIN_KEY` must be a strong random string (pick one; the Ops tab
-   on the demo asks visitors for this passcode). → Apply.
+   on the demo asks visitors for this passcode). Tenant namespaces are derived
+   server-side: stub tenants/customers authenticate with per-tenant keys in
+   `AEGISTEL_TENANT_API_KEYS` (`tenant_a=key1,tenant_b=key2,...`) and are scoped
+   to that namespace for memory writes/reads; callers without a tenant key are
+   scoped to `AEGISTEL_DEFAULT_TENANT` (set `AEGISTEL_ALLOW_ANON_AUDIT=false` to
+   require a tenant key for every audit). QoD step-up is recommendation-only:
+   audits surface `qod_recommended` but never provision the chargeable session;
+   set `AEGISTEL_QOD_POLICY_ENABLED=true` to arm the `POST /api/v1/audit/qod/provision`
+   confirm endpoint. It accepts only a fresh tenant-scoped `audit_id` from a
+   QoD-recommended audit, preventing a bare phone number from provisioning a session.
+   confirm endpoint (admin or tenant key required). → Apply.
 4. First build takes ~10–15 min (it builds the Next.js + Python image); then
    the service is live. Public URL: `https://aegistel.onrender.com`.
 
 > Free-tier caveats: free web services run 0.1 vCPU / 512 MB RAM — enough for
 > the demo audit path, but keep concurrent audits low. If you exceed the monthly
 > bandwidth or instance hours, services are **suspended** (never billed) until
-> the next reset — no surprise charges. The filesystem is ephemeral: use the
-> QDRANT keys for durable audit-history/memory, which is the same persistence
-> model as the demo. The feedback store (`data/feedback.jsonl`) is also on that
+> the next reset — no surprise charges. The filesystem is ephemeral: memory
+> **defaults to a local JSONL store on that disk** (durable only for the life of
+> the instance); enable `AEGISTEL_LIVE_MEMORY=1` with QDRANT keys for durable
+> audit-history/memory across restarts, which is the same persistence model as
+> the demo. The feedback store (`data/feedback.jsonl`) is also on that
 > ephemeral disk — export it via the Ops tab before a rebuild; a durable store
 > is a clear follow-up if feedback volume grows.
 
@@ -173,14 +186,15 @@ Use the `render.yaml` `sync: false` pattern or dashboard secrets for anything se
 | Variable | Required | Notes |
 |---|---|---|
 | `GROQ_API_KEY` | optional | Primary specialist/auditor LLM provider |
-| `GOOGLE_API_KEY` | required for memory | Gemini; also drives QDRANT memory embeddings + extraction — needed for memory context in the verdict |
+| `GOOGLE_API_KEY` | optional | Gemini LLM tier; also drives memory embeddings/extraction only when remote memory is enabled (`AEGISTEL_LIVE_MEMORY=1`) |
 | `OPENROUTER_API_KEY` | optional | Fast reliable fallback, preferred before Gemini in `MODEL_CHAIN` |
 | `CEREBRAS_API_KEY` | optional | Additional provider |
 | `OPENAI_API_KEY` | optional | Additional provider |
-| `DEEPGRAM_API_KEY` | optional | TTS. When set it is used **strictly** (a 401/failure surfaces as a 503 with a hint, never a silent voice swap); `edge_tts` is used only when no key is set |
-| `NOKIA_NAC_API_KEY` | optional (sandbox falls back) | Network-as-Code (RapidAPI) key for live CAMARA calls |
+| `DEEPGRAM_API_KEY` | optional | TTS (only provider). When set it is used **strictly** (a 401/failure surfaces as a 503 with a hint, never a silent voice swap); when unset, `/api/audio/tts` fails closed with a hint and the dashboard falls back to the browser's local speech |
+| `NOKIA_NAC_API_KEY` | optional (sandbox falls back) | Network-as-Code (RapidAPI) key for the Nokia NaC sandbox attempts |
 | `NOKIA_CAMARA_BASE_URL` | optional | Override NaC base URL |
-| `QDRANT_URL` / `QDRANT_API_KEY` | required for memory | Persistent memory backend; feeds incident context into the verdict |
+| `AEGISTEL_QOD_SERVICE_IP` | optional | Server-owned application endpoint for QoD sessions; clients cannot override it |
+| `QDRANT_URL` / `QDRANT_API_KEY` | optional (remote memory only) | Persistent vector backend for memory; used only when `AEGISTEL_LIVE_MEMORY=1` — memory otherwise defaults to the local JSONL store |
 | `GEMINI_MODEL` | optional | Default `gemini-flash-latest` |
 | `GROQ_MODEL` | optional | Default `openai/gpt-oss-120b` (llama-3.3-70b/llama-3.1-8b decommissioned 2026-08-16) |
 | `FRONTEND_ORIGIN` | optional | CORS allowlist; defaults to `http://localhost:3000` — **set to your frontend URL in production** |
@@ -227,7 +241,7 @@ python -m pytest tests -q
 - **CORS errors in production:** `FRONTEND_ORIGIN` defaults to `localhost:3000`. Set it to the deployed frontend origin.
 - **Free-tier cold starts:** Render free instances sleep after 15 min of idle; the first request can take 30–60s. Set up the external monitor in **§4.2** (cron-job.org / UptimeRobot) so the site stays warm and judges get an instant page — treat the GitHub-Action ping as backup, since GitHub's cron is unreliable for this cadence. The API audit timeout is 120s; cold starts that exceed Render's ~90s proxy cap (measured: an empty-body `502` at 90.8s) surface as a `502`.
 - **Adversarial Drill limits shared with the drill endpoint:** on the free instance the drill MUST stay under Render's ~90s proxy cap and the 512 MB memory budget. The drill handles this internally — plays always run through the grounded deterministic engine (concurrent LLM crews OOM the worker: empty-body `502` then `503`), the Fraud Genie curates the lineup only, and the whole run is wall-clock-capped at **50s** while the endpoint allows **60s**. Back-to-back drills on the live site complete in ~7–14s each. Do NOT raise `_DRILL_WALL_CLOCK_S`/`DRILL_TIMEOUT_SECONDS` without re-verifying Render's proxy ceiling.
-- **Slow audits / `used_fallback: true` / `x-tts-source` not `deepgram` on a deployed site:** almost always **stale environment keys** on the host. Render's env must match your local root `.env`. Validate from inside the host with `GET <url>/diagnostics/provider_probe` (per-provider reachability + HTTP status) and check `GET <url>/api/health` -> `providers_configured`.
+- **Slow audits / `used_fallback: true` / `x-tts-source` not `deepgram` on a deployed site:** almost always **stale environment keys** on the host. Render's env must match your local root `.env`. Validate from inside the host with `GET <url>/diagnostics/provider_probe` (operator-only: pass the `AEGISTEL_ADMIN_KEY` token) and check `GET <url>/api/health` -> `providers_configured`.
 - **Planned provider egress is blocked (all probes fail):** the audit fast-falls back to the deterministic engine (~4s) via the cached reachability gate, so the demo never hangs while waiting on a dead model connection.
 - **429 on audits:** The app already cooldowns rate-limited providers and falls back; if all providers are exhausted, the deterministic `synthesize_specialist_assessment` path returns a fallback assessment.
-- **Memory not persisting:** Without a valid `QDRANT_URL`/`QDRANT_API_KEY`, mem0 falls back to an in-process store that resets on redeploy.
+- **Memory not persisting:** by design, memory **defaults to a local JSONL store**, and on the free Render filesystem that store is ephemeral (resets on redeploy). For durable memory across restarts, set `AEGISTEL_LIVE_MEMORY=1` with valid `QDRANT_URL`/`QDRANT_API_KEY` (and a `GOOGLE_API_KEY`) so mem0/Qdrant back the store.

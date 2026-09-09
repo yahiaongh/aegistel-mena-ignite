@@ -9,20 +9,26 @@ app_port: 7860
 dockerfile: Dockerfile.hf
 ---
 
-# AegisTel — Autonomous Telco-Aware AI Guard Engine
+# AegisTel — Payment-Fraud & Account-Takeover Guard on the Radio Network
 
-> GSMA MENA Ignite Hackathon 2026 Submission · Theme 7 — Open Innovation
+> GSMA MENA Ignite Hackathon 2026 Submission · Theme 4 — Secure Fintech, Payments & Anti-Fraud Innovation
 
 ## Executive summary
 
-AegisTel turns a single transaction context (MSISDN, amount, location, QoD
-preference) into an **explainable, autonomous fraud decision**. The backend is a
-FastAPI service driven by a LangGraph orchestrator: it runs **seven live CAMARA
-telecom checks** through the Nokia Network-as-Code SDK, fuses the evidence with a
-deterministic rule engine, lets a **CrewAI specialist crew** refine the verdict
-(made stricter only when warranted), and returns a grounded decision with a full
-evidence trail. A polished Next.js dashboard renders the live pipeline and the
-operator-facing verdict.
+AegisTel answers one question per MENA payment, in seconds: *is this
+SIM and device really the account holder's, right now?* The backend is a FastAPI
+service driven by a LangGraph streaming wrapper: a **bounded planner** selects the
+CAMARA signals the transaction actually needs, then executes **seven CAMARA
+integrations through the Nokia NaC sandbox** (SDK → REST → documented sandbox
+fallback, each result stamped with its real source; a 401 or unknown number
+degrades provenance, never the verdict: SIM swap, number verification, location,
+roaming, reachability, congestion insights, and QoD). The evidence fuses with a
+deterministic rule engine, a **CrewAI specialist crew** may refine
+the verdict (made stricter only when warranted), and it returns a grounded
+decision with a full evidence trail — blocked or stepped-up before settlement
+when the SIM was swapped, the number binding failed, or the device is not where
+the bank thinks it is. A polished Next.js dashboard renders the live pipeline and
+the operator-facing verdict.
 
 The design rests on three principles:
 
@@ -34,25 +40,28 @@ The design rests on three principles:
 
 ## Why it matters
 
-Traditional fraud systems evaluate a transaction against static application
-context. AegisTel injects **operator-grade telecom intelligence** into the
-decision loop — the same signals a telco uses to protect its own subscribers —
-so the verdict reflects where the device really is, whether the SIM was recently
-replaced, whether the number binding still holds, and how congested the serving
-cell is.
+A bank's own screens verify password, device and netbanking session — but
+account takeover happens **after** those gates. Traditional fraud systems keep
+evaluating the same app-layer context an attacker already holds. AegisTel
+injects **operator-grade telecom intelligence** into the payment decision loop —
+the same signals a telco uses to protect its own subscribers — so the verdict
+reflects where the device really is *right now*, whether the SIM was recently
+replaced (classic ATO), whether the number binding still holds, and how
+congested the serving cell is (crowd-gathering noise that buries SIM swaps).
 
 | Signal | What it detects |
 |---|---|
 | SIM swap | Account-takeover via recent SIM replacement |
 | Number Verification | Silent ownership / device-binding check (account takeover) |
 | Location verification | Device-at-claimed-location proof |
-| Roaming status | Cross-border / roaming context |
+| Roaming status | Cross-border / mule-ware context |
 | Device reachability | Is the device ON / reachable? |
-| Congestion Insights | Crowd-gathering / mass-event context |
+| Congestion Insights | Crowd-gathering / mass-event context that masks fraud signals |
 | Quality on Demand (QoD) | Guaranteed-QoS escalation on confirmed risk |
 
-These apply directly to **fintech transfers, emergency dispatch, and smart-city
-/ pilgrimage safety** — any flow where a fast, evidence-backed decision matters.
+These apply directly to **MENA mobile-first payments**: instant transfers,
+cross-border wires, top-ups and P2P — where the phone *is* the credential and
+account-takeover/SIM-swap fraud is the number-one settlement risk.
 
 ---
 
@@ -72,7 +81,7 @@ flowchart LR
     subgraph INTEL["Intelligence layers"]
         CREW["CrewAI specialist crew<br/>+ model fallback chain"]
         DET["Deterministic rule engine"]
-        MEM[("Incident memory<br/>QDRANT + local store")]
+        MEM[("Incident memory<br/>local JSONL default · Qdrant opt-in")]
     end
 
     subgraph TELCO["Telecom data source"]
@@ -83,8 +92,8 @@ flowchart LR
     G --> O
     O --> DET
     O --> CREW
-    DET -->|"7 CAMARA checks"| N
-    CREW -->|"7 CAMARA checks"| N
+    DET -->|"planned CAMARA signals"| N
+    CREW -->|"planned CAMARA signals"| N
     O <-->|"retrieve / record incidents"| MEM
     O -->|"verdict + trace + telemetry"| G
     G -->|"structured AuditResponse"| B
@@ -115,7 +124,7 @@ flowchart LR
     end
 
     subgraph EVID["Evidence (parallel)"]
-        subgraph TOOLS["7 CAMARA tools — SDK → REST → sandbox"]
+        subgraph TOOLS["7 CAMARA tool catalog — NaC SDK → REST → sandbox (per-signal provenance)"]
             T1["SIM swap"]
             T2["Location"]
             T3["Roaming"]
@@ -147,9 +156,18 @@ flowchart LR
     FINAL --> RESP["AuditResponse<br/>status · risk · reasoning · trace"]
 ```
 
-The seven tools run as `asyncio` calls that execute **concurrently** and rejoin
-before the deterministic synthesis — shown here as a single edge into the tool
-box to keep the diagram from tangling while staying truthful to the concurrency.
+A bounded policy establishes mandatory identity evidence; then a **CrewAI CAMARA
+Orchestration Planner** chooses, per transaction context, which optional signals
+to collect early from a strict allowlist. When no approved provider is available,
+the trace explicitly shows the policy fallback. `crew_specialists.plan_tool_calls`
+defines the non-negotiable safety envelope per transaction type, while the agent
+planner cannot remove a required check or invent an API call. The policy marks a
+bounded subset of the seven-tool catalog as **required** signals and defers the
+rest as **optional** evidence pulled in only when the first risk scan, the
+transaction value, or incident history justifies a deeper pass. The selected
+tools run as `asyncio` calls that execute **concurrently** and rejoin before the
+deterministic synthesis — shown here as a single edge into the tool box to keep
+the diagram from tangling while staying truthful to the concurrency.
 
 ---
 
@@ -162,7 +180,7 @@ flowchart TD
     end
 
     subgraph FALLBACK["Attempt order"]
-        L1["1 · Live Nokia NaC SDK"] -->|"fails"| L2["2 · CAMARA REST passthrough"] -->|"fails"| L3["3 · Documented sandbox simulator"]
+        L1["1 · Nokia NaC SDK (sandbox plan)"] -->|"fails / 401 / no data"| L2["2 · CAMARA REST passthrough"] -->|"fails"| L3["3 · Documented sandbox simulator"]
     end
 
     subgraph RES["Source tagging"]
@@ -221,7 +239,7 @@ flowchart LR
 ```mermaid
 flowchart TD
     subgraph WRITE["Write path"]
-        AUDIT["Audit completes"] --> EXTRACT["LLM extracts structured incident<br/>(Gemini)"] --> IDX["Index into QDRANT + local store"]
+        AUDIT["Audit completes"] --> EXTRACT["LLM extracts structured incident<br/>(Gemini, remote only)"] --> IDX["Index into local store + Qdrant (opt-in)"]
     end
 
     subgraph READ["Read path"]
@@ -232,8 +250,14 @@ flowchart TD
     STORE --> RETR
 ```
 
-- Writes/reads use Gemini-backed extraction so they do **not** compete with the
-  specialist reasoning budget; reads fall back to local exact-match for stability.
+- **Default is a local JSONL store** (`data/local_memory.jsonl`, overridable via
+  `AEGISTEL_MEMORY_PATH`): no network dependency, deterministic across demo runs.
+  Remote semantic memory (mem0 with Qdrant vector store + Gemini embedding) is
+  built **only when the deployment opts in** with `AEGISTEL_LIVE_MEMORY=1` —
+  the README/runtime do not assume a live vector cluster.
+- On the opt-in remote path, extraction/embeddings are Gemini-backed so they do
+  **not** compete with the specialist reasoning budget, and reads fall back to
+  local exact-match for stability.
 - Every audit is **recorded** (powering the operator's Audit History / risk-trend
   panel), but **simulator subscribers are excluded from verdict weighting** so the
   clean control case (`+99999991001`) stays honestly `APPROVED` across repeated
@@ -294,8 +318,8 @@ location, roaming, QoD step-up) — the same drama the `otp-sim-swap` /
 | `POST` | `/api/v1/audit/stream` | SSE pipeline progress → verdict |
 | `GET` | `/api/v1/history/{msisdn}` | Recorded audit history for a number |
 | `POST` | `/api/v1/drill/run` | Run the Adversarial Drill |
-| `POST` | `/api/audio/tts` | TTS narration (Deepgram, else edge_tts) |
-| `POST` | `/api/memory/clear-all` | Reset the incident store (test/demo helper) |
+| `POST` | `/api/audio/tts` | TTS narration (Deepgram only; `503` + hint when unconfigured) |
+| `POST` | `/api/memory/clear-all` | Reset the incident store (operator-only, needs `AEGISTEL_ADMIN_KEY`) |
 | `POST` | `/api/feedback` | Submit visitor feedback (≥1 star rating per feature; public) |
 | `GET` | `/api/feedback` | Founder-only readback (needs `AEGISTEL_ADMIN_KEY`; 401/503 otherwise) |
 | `POST` | `/api/copilot/chat` | Copilot Q&A over the platform FAQ (`enhance: true` adds LLM polish) |
@@ -316,11 +340,11 @@ aegistel-mena-ignite/
 │   │   │   ├── crew_specialists.py    # CrewAI crew + deterministic engine + reconcile
 │   │   │   ├── graph_orchestrator.py  # LangGraph orchestration (execute_audit)
 │   │   │   ├── drill_agent.py         # Adversarial Drill attacker/defender
-│   │   │   └── memory_agent.py        # Incident memory (QDRANT + local)
+│   │   │   └── memory_agent.py        # Incident memory (local JSONL · Qdrant opt-in)
 │   │   ├── core/config.py             # env-driven settings
 │   │   ├── schemas/telemetry.py       # Pydantic request/response models
 │   │   └── main.py                    # FastAPI app + routes
-│   ├── tests/                         # 90 tests (89 offline pass + 1 opt-in live)
+│   ├── tests/                         # 143 test functions (142 offline + 1 opt-in live)
 │   │   └── test_behavioral_eval.py    # behavioral eval gate (deterministic + live LLM)
 │   └── requirements.txt
 ├── frontend/
@@ -344,8 +368,9 @@ For full, judge-ready instructions see **[RUN_AND_TEST.md](RUN_AND_TEST.md)** an
 > **Heads-up for reviewers/judges:** AegisTel needs **provider API keys you create
 > yourself** (free tiers are fine) — they are never committed. Before running,
 > create a root `.env` from `backend/.env.example` and fill in your keys
-> (minimum live verdict: an LLM key, `GOOGLE_API_KEY`, `QDRANT_URL` +
-> `QDRANT_API_KEY`). See "Before you run" in RUN_AND_TEST.md.
+> (minimum live verdict: an LLM key and `GOOGLE_API_KEY`; the optional
+> `QDRANT_URL` + `QDRANT_API_KEY` only enable remote memory when
+> `AEGISTEL_LIVE_MEMORY=1`, since memory defaults to the local JSONL store).
 
 ```bash
 # Local: backend (:8000) + frontend (:3000)
@@ -363,7 +388,7 @@ docker build -f Dockerfile.hf -t aegistel . && docker run -p 7860:7860 aegistel
 #   -> https://aegistel.onrender.com, kept warm by a free GitHub Actions cron
 #   (see DEPLOYMENTS.md §4 for secrets + the AEGISTEL_URL keepalive variable)
 
-# Offline test suite — 89 passed + 1 opt-in live test (no live keys needed)
+# Offline test suite — 142 passed + 1 opt-in live test (no live keys needed)
 cd backend && ../venv/bin/python -m pytest tests/ -q
 
 # Run the live behavioral eval (needs real model keys):
@@ -374,7 +399,8 @@ cd backend && ../venv/bin/python -m pytest tests/test_behavioral_eval.py --run-l
 
 ## Verification status
 
-- **Backend tests:** 89 passed / 0 failures, **0 warnings**, plus **1 opt-in live
+- **Backend tests:** 142 passed / 0 failures (1 third-party `DeprecationWarning`),
+  plus **1 opt-in live
   test** that skips by default (`backend/pytest.ini` filters third-party
   deprecation noise). The offline portion is genuinely network-free: the SDK is
   stubbed in a conftest fixture, LLM provider keys are blanked (forcing the
@@ -386,8 +412,13 @@ cd backend && ../venv/bin/python -m pytest tests/test_behavioral_eval.py --run-l
   an audit via the frontend proxy returns HTTP 200 with all 7 tools and a grounded
   verdict. Local, `Dockerfile.hf`, and Render all reach the backend through the
   same `AEGISTEL_BACKEND_URL` wiring.
-- **Live LLM E2E (verified):** real audit in ~69s with `used_fallback: false`,
-  memory initialized, and TTS returning audio (Deepgram → edge_tts fallback).
+- **Live LLM E2E (verified):** real audit completed with `used_fallback: false`,
+  memory initialized, and TTS returning Deepgram audio. Wall-clock was ~69s —
+  the LLM-enhanced path currently runs **inline** (the audit awaits the crew
+  before returning), so the sub-5-second target applies to the deterministic-only
+  path: p50 0.57–1.02 s (NAC sandbox, max ≤ 4.32 s) and ~0.01 s pure offline
+  compute (see `docs/submission/PERFORMANCE.md`). Two-stage enrichment (verdict
+  first, LLM polish async after) is a roadmap item.
 
 ---
 
@@ -419,15 +450,65 @@ The reconcile layer enforces: LLM may **intensify** confirmed risk, **cannot
 downgrade** grounded risk, and **cannot invent** risk on a clean case — so the
 same transaction yields the same verdict whether the LLM path is active or not.
 Memory context escalates clean-but-previously-flagged cases and bumps active risk
-one severity level; QoD creation is a consequence of risk, not a signal.
+one severity level; QoD provisioning is a **recommendation-only operator action**
+(`qod_recommended`), never a side effect of the decision — the chargeable Nokia
+QoD session is created only through the authenticated, policy-gated
+`POST /api/v1/audit/qod/provision` confirm endpoint. The confirm request must
+carry the fresh, tenant-scoped `audit_id` returned by the recommendation; the
+server rejects a missing, foreign, stale, or non-recommended decision.
+
+---
+
+## The buyer & the business model
+
+**Buyer:** MENA banks, digital wallets, remittance platforms, and mobile-money /
+insurtech players that authorize payment flows, plus the mobile operators that
+hold the radio-network signals.
+
+**Model:** a **fraud-decision API priced per protected transaction** — a
+metered, fail-closed API call that returns an evidence-backed verdict before the
+money settles. Indicative pricing: `~$0.01–0.05` per graded transaction, with
+volume tiers and a per-tenant rate plan. Rate the verdict, not the feature: a
+single stopped ATO wire repays years of API fees. The operator is the data
+holder and revenue owner, reselling CAMARA signals to financial institutions
+(the same way SIM-swap verification is already sold at scale today).
+
+For the framing used in the pitch, see `docs/submission/THEME4_PITCH.md`.
+
+## Security & production readiness — honest status
+
+The repo is a **hackathon demonstration**, not yet a payment-grade product. What
+is implemented today and what production adoption would still require:
+
+| Control | Demo status | Production requirement |
+|---|---|---|
+| Telemetry integrity | Tool `success` flags derived from `status_code < 400` + no error; regression-tested | Keep + attest (e.g. signed receipts) |
+| Rate limiting | In-process sliding-window per IP (`AEGISTEL_API_RATE_LIMIT_PER_MIN`) on audit/stream/feedback/copilot/TTS/drill → `429` + `Retry-After` | Edge/WAF + authenticated per-tenant quotas |
+| Operator authentication | `AEGISTEL_ADMIN_KEY` (Bearer / `X-Admin-Token` / `?token=`) on history, memory-wipe, provider probe, feedback readback; fails closed `401`/`503` | OIDC/SSO, roles, credential rotation, audit logs |
+| Tenant isolation | Tenant namespace **derived server-side** from the client's credential (`AEGISTEL_TENANT_API_KEYS`, `tenant=key,...`); `AuditRequest` has **no tenant field** (`extra="forbid"` → a body that smuggles `tenant_id` is a 422); anonymous callers are scoped to `AEGISTEL_DEFAULT_TENANT` (or `401` when `AEGISTEL_ALLOW_ANON_AUDIT=false`); memory writes/reads + audit echo all use the derived tenant | Per-tenant stores, sign-ups, compliance, key rotation |
+| QoD provisioning consent | Risk is surfaced as `qod_recommended` only; the decision never calls Nokia QoD. The chargeable session is created **only** via `POST /v1/audit/qod/provision`, gated by `AEGISTEL_QOD_POLICY_ENABLED` (default off), a tenant bearer key or demo operator key, and a fresh tenant-scoped recommended `audit_id`; it is rate-limited, one-time per audit, uses the server-owned `AEGISTEL_QOD_SERVICE_IP`, and is recorded as a `QOD_PROVISIONED` incident | Carrier billing integration, explicit subscriber opt-in |
+| CAMARA access | **Nokia NaC sandbox integration** — SDK → REST → documented fallback, per-signal source labels; a 401 entitlement gap (e.g. Number Verification) or unknown E.164 degrades to the documented fallback with honest UNKNOWN semantics | Carrier-grade SLAs, egress IP allow-lists, per-capability entitlements |
+| Voice | Deepgram-only TTS, fails closed; no edge-tts | Vendor contract, regional latency |
+
+**Privacy:** telecom data purpose, minimization, retention, deletion, operator
+access, and the synthetic-demo-data statement are documented in
+[`PRIVACY.md`](./PRIVACY.md) and rendered at `/privacy` on the dashboard.
+
+**Latency (honest):** the deterministic-only decision path measures **<5 s**:
+p50 0.57–1.02 s on the NAC-sandbox path (real Nokia attempts → documented
+fallback, max ≤ 4.32 s) and ~0.01 s as a pure offline compute floor. The
+LLM-enhanced path is currently **inline** — the audit waits for the CrewAI
+chain before returning (~69 s worst observed) — and the client's deterministic
+retry recovers the verdict whenever the live stream is slow or drops. True
+two-stage enrichment is a roadmap item (see `docs/submission/PERFORMANCE.md`).
 
 ---
 
 ## Use cases
 
-- **Fintech security** — fraud prevention, secure transaction approval, telecom-backed assurance.
-- **Emergency services** — guaranteed QoS for critical comms, low-latency dispatch, reliable operator coordination.
-- **Smart cities & pilgrimage** — crowd-aware routing, public-safety automation, telecom-contextual decisioning.
+- **MENA mobile-first payments** — stop account takeover and SIM-swap fraud at the radio network itself, before settlement.
+- **Instant & cross-border wires** — catch mule-ware (SIM-staging, roaming context, geo-fence breaks) on same-day payments.
+- **Fintech / neobank screening** — phone-backed assurance and QoD step-up for high-value transfers your app-layer screens cannot see.
 
 ---
 

@@ -160,7 +160,7 @@ _KNOWLEDGE_BASE: List[KB_TOPIC] = [
         "Voice briefing",
         ["voice briefing", "tts", "audio", "listen to the verdict", "narration", "who is the voice"],
         ["voice", "tts", "audio", "narration", "listen", "speak"],
-        "After an audit the verdict can be narrated aloud. It is synthesized with **Deepgram** (voice `aura-asteria-en`), falling back to local **edge_tts** when the key is absent. There is also a read-aloud control in the top bar if the swarm is already talking through a briefing.",
+        "After an audit the verdict can be narrated aloud. It is synthesized **only** via **Deepgram** (voice `aura-asteria-en`); without a configured `DEEPGRAM_API_KEY` the endpoint fails closed with a hint and the dashboard reads the verdict with the browser's local speech instead. There is also a read-aloud control in the top bar if the swarm is already talking through a briefing.",
         ["verdicts", "how_audit", "stack"],
     ),
     _entry(
@@ -176,7 +176,7 @@ _KNOWLEDGE_BASE: List[KB_TOPIC] = [
         "Tech stack",
         ["tech stack", "what stack", "what models", "langgraph", "nextjs", "fastapi", "what is it built with", "technology", "what llms", "what language models", "which models do you use", "what is it written in"],
         ["stack", "langgraph", "crewai", "litellm", "mem0", "qdrant", "fastapi", "next", "groq", "gemini", "camara", "llms", "model", "llm"],
-        "Built on a **LangGraph** state machine orchestrating a **CrewAI** specialist + auditor swarm, with **LiteLLM** routing that walks a model chain (Groq GPT-OSS 120B/20B & Qwen3.6-27B → OpenRouter GPT-4o-mini → Gemini flash-lite) behind a cooldown that skips drowned providers. Memory uses **mem0 + QDRANT** with Gemini embeddings; the network layer talks to **Nokia NaC** through **7 CAMARA APIs**; the UI is **Next.js** + a **FastAPI** backend with a Deepgram/edge-TTS voice layer. The whole demo runs on free tiers.",
+        "Built on a **LangGraph** state machine orchestrating a **CrewAI** specialist + auditor swarm, with **LiteLLM** routing that walks a model chain (Groq GPT-OSS 120B/20B & Qwen3.6-27B → OpenRouter GPT-4o-mini → Gemini flash-lite) behind a cooldown that skips drowned providers. Memory defaults to a **local JSONL store** (mem0/Qdrant opt-in via `AEGISTEL_LIVE_MEMORY=1`); the network layer talks to **Nokia NaC** through **7 CAMARA APIs**; the UI is **Next.js** + a **FastAPI** backend with a Deepgram-only voice layer. The whole demo runs on free tiers.",
         ["what_is", "multi_agent", "tools"],
     ),
     _entry(

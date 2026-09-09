@@ -1,10 +1,56 @@
 # app/agents/tools.py
+"""Nokia NaC (Network-as-Code) integration — sandbox-provisioned, per-signal provenance.
+
+The seven CAMARA tools run through Nokia's Network-as-Code SDK (RapidAPI), but this
+is a *sandbox-provisioned* integration, not seven guaranteed live carrier signals.
+Every tool follows the same explicit ladder and labels the result with its actual
+source:
+
+    1. Nokia NaC SDK
+    2. CAMARA REST passthrough (Nokia NaC REST API)
+    3. Documented local sandbox simulator (Nokia CAMARA Sandbox / LOCAL FALLBACK)
+
+Reasons a signal can land on a fallback — and these are observed, not theoretical:
+
+- A NaC capability with no entitlement on the provisioned key returns an auth error
+  (Number Verification is the typical case: ~401), so that tool degrades to the
+  documented sandbox semantics.
+- An arbitrary (non-demo) E.164 has no simulator behavior, so Number Verification
+  reports honest UNKNOWN instead of "verified".
+
+Therefore the defensible product claim is "Nokia NaC sandbox integration with
+per-signal source evidence", never "seven live carrier checks" — the Evidence
+Explorer renders the per-signal source badge for exactly that reason.
+"""
 import json
 import os
+from functools import wraps
 from typing import Any, Dict
 
 import requests
-from crewai.tools import tool
+
+
+class _LocalTool:
+    """Small CrewAI-compatible callable wrapper for direct CAMARA execution.
+
+    The orchestrator invokes these functions itself; it does not hand tool
+    objects to CrewAI. Keeping this adapter local prevents deterministic audits
+    from importing CrewAI's complete LLM/auth stack just to attach `.run`.
+    """
+
+    def __init__(self, func):
+        self._func = func
+        wraps(func)(self)
+
+    def run(self, *args, **kwargs):
+        return self._func(*args, **kwargs)
+
+    def __call__(self, *args, **kwargs):
+        return self._func(*args, **kwargs)
+
+
+def tool(func):
+    return _LocalTool(func)
 
 NOKIA_BASE_URL = os.getenv(
     "NOKIA_CAMARA_BASE_URL",

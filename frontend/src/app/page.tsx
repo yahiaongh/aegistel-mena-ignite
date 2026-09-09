@@ -44,6 +44,7 @@ import {
 import AuditFlowDiagram, { type FlowState, type FlowTool } from "./components/AuditFlowDiagram";
 import CopilotWidget from "./components/CopilotWidget";
 import FeedbackWidget from "./components/FeedbackWidget";
+import Link from "next/link";
 
 interface ToolResult {
   name: string;
@@ -86,6 +87,7 @@ interface NokiaTelemetry {
 }
 
 interface AuditResponse {
+  audit_id: string;
   msisdn: string;
   amount: number;
   transaction_type: string;
@@ -94,6 +96,7 @@ interface AuditResponse {
   telemetry: NokiaTelemetry;
   reasoning: string;
   recommended_action: string;
+  qod_recommended?: boolean;
   agent_trace: AgentStep[];
   used_fallback?: boolean;
   raw_output?: string | null;
@@ -179,6 +182,9 @@ export default function AegisTelDashboard() {
   const [geofenceRadius, setGeofenceRadius] = useState("2000");
   const [checkRoaming, setCheckRoaming] = useState(true);
   const [requestQoD, setRequestQoD] = useState(true);
+  const [qodProvisioned, setQodProvisioned] = useState<{ sessionId?: string; qosStatus?: string; source?: string } | null>(null);
+  const [qodProvisioning, setQodProvisioning] = useState(false);
+  const [qodProvisionError, setQodProvisionError] = useState<string | null>(null);
 
   const [loading, setLoading] = useState(false);
   const [auditResult, setAuditResult] = useState<AuditResponse | null>(null);
@@ -418,11 +424,84 @@ export default function AegisTelDashboard() {
     if (voiceEnabled) void playVoiceAlert(briefText);
   };
 
+  const provisionQoD = async () => {
+    if (!auditResult) return;
+    const token = opsToken.trim();
+    if (!token) {
+      setQodProvisionError(
+        "An operator or tenant API key is required to confirm QoD provisioning.",
+      );
+      return;
+    }
+    setQodProvisioning(true);
+    setQodProvisionError(null);
+    try {
+      const res = await fetch(`${apiBase}/api/v1/audit/qod/provision`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ audit_id: auditResult.audit_id, msisdn: normalizeE164(auditResult.msisdn) }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(body?.detail ? `HTTP ${res.status}: ${body.detail}` : `HTTP ${res.status}`);
+      }
+      setQodProvisioned(body.session ?? null);
+      setLiveEvents((prev) => [
+        ...prev,
+        {
+          id: `${Date.now()}-qod-prov`,
+          type: "response",
+          message: `QoD session provisioned for ${auditResult.msisdn} (${body.session?.sessionId ?? ""}) under tenant ${body.tenant ?? ""}`,
+          stage: "completed",
+        },
+      ]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      setQodProvisionError(message);
+    } finally {
+      setQodProvisioning(false);
+    }
+  };
+
   const handleFlowProgress = (payload: Record<string, unknown>) => {
     const setToolState = (name: string, state: FlowState, extra?: Partial<FlowTool>) => {
       setFlowTools((prev) => prev.map((t) => (t.name === name ? { ...t, state, ...extra } : t)));
     };
     switch (payload.type) {
+      case "plan":
+        {
+          const required = Array.isArray(payload.required) ? payload.required : [];
+          const earlyOptional = Array.isArray(payload.early_optional) ? payload.early_optional : [];
+          const deferred = Array.isArray(payload.deferred) ? payload.deferred : [];
+          const toolNameList = (list: unknown[]) => list.map(String).join(", ") || "none";
+          setFlowTools((prev) =>
+            prev.map((t) => ({
+              ...t,
+              state: (required as string[]).includes(t.name) ? ("running" as FlowState) : ("pending" as FlowState),
+            }))
+          );
+          setLiveEvents((prev) => [
+            ...prev,
+            {
+              id: `${Date.now()}-plan`,
+              type: "plan",
+              message: `${payload.mode === "crewai" ? "CrewAI planner" : "Policy planner"}: required [${toolNameList(required)}], early context [${toolNameList(earlyOptional)}], deferred [${toolNameList(deferred)}]`,
+              stage: "planning",
+              detail: String(payload.rationale ?? ""),
+            },
+          ]);
+        }
+        break;
+      case "plan:expand":
+        {
+          const tools = Array.isArray(payload.tools) ? payload.tools.map(String) : [];
+          setFlowTools((prev) => prev.map((t) => (tools.includes(t.name) ? { ...t, state: "running" as FlowState } : t)));
+          setLiveEvents((prev) => [
+            ...prev,
+            { id: `${Date.now()}-planx`, type: "plan", message: `Planner expanded to deferred signals [${tools.join(", ")}] (${payload.reason ?? ""})`, stage: "planning" },
+          ]);
+        }
+        break;
       case "tools:start":
         setFlowTools((prev) => prev.map((t) => ({ ...t, state: "running" as FlowState })));
         setLiveEvents((prev) => [
@@ -453,11 +532,17 @@ export default function AegisTelDashboard() {
           { id: `${Date.now()}-synth`, type: "synthesis", message: `Deterministic synthesis: ${payload.status} / ${payload.risk_score} (${payload.signal_count} signals)`, stage: "grounding" },
         ]);
         break;
-      case "qod:start":
-        setToolState("create_qod_session", "running");
-        break;
-      case "qod:done":
-        setToolState("create_qod_session", "ok");
+      case "qod:recommended":
+        setToolState("create_qod_session", "flag", { source: "recommendation" });
+        setLiveEvents((prev) => [
+          ...prev,
+          {
+            id: `${Date.now()}-qod-rec`,
+            type: "response",
+            message: `QoD step-up RECOMMENDED (${payload.status ?? "STEP_UP_REQUIRED"}) — provisioning needs an explicit operator confirm`,
+            stage: "verdict",
+          },
+        ]);
         break;
       case "llm:start":
         setFlowLlmModel(String(payload.specialist ?? "").split("/").pop() ?? null);
@@ -502,6 +587,8 @@ export default function AegisTelDashboard() {
     setFlowAuditor("pending");
     setFlowLlmModel(null);
     setFlowVerdict(null);
+    setQodProvisioned(null);
+    setQodProvisionError(null);
     if (!deterministicRetry) setLiveEvents([]);
 
     const payload = {
@@ -696,7 +783,7 @@ export default function AegisTelDashboard() {
                   NOKIA NaC CAMARA SWARM
                 </span>
               </div>
-              <p className="hidden sm:block text-[11px] text-slate-400 truncate">Multi-Agent Telecom Fraud & Network Intelligence Platform</p>
+              <p className="hidden sm:block text-[11px] text-slate-400 truncate">MENA Payment-Fraud & Account-Takeover Guard</p>
             </div>
           </div>
 
@@ -736,10 +823,10 @@ export default function AegisTelDashboard() {
               <Volume2 className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">{voiceEnabled ? "VOICE ON" : "VOICE MUTED"}</span>
             </button>
-            <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-md">
+            <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-md" title="Nokia NaC integration (sandbox provisioning). Per-signal source labels in the Evidence Explorer distinguish NaC SDK hits from sandbox fallback.">
               <RadioTower className="w-3.5 h-3.5 text-cyan-400" />
-              <span className="hidden sm:inline text-slate-400">APIs Integrated:</span>
-              <span className="text-cyan-300 font-bold">{activeSignalCount ?? "—"} <span className="hidden sm:inline">CAMARA Signals</span></span>
+              <span className="hidden sm:inline text-slate-400">NaC Sandbox:</span>
+              <span className="text-cyan-300 font-bold">{activeSignalCount ?? "—"} <span className="hidden sm:inline">CAMARA Tools</span></span>
             </div>
             <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-md">
               <ShieldCheck className="w-3.5 h-3.5 text-amber-400" />
@@ -884,7 +971,7 @@ export default function AegisTelDashboard() {
                   />
                 </label>
                 <label className="flex items-center justify-between text-xs text-slate-400 cursor-pointer">
-                  <span>Auto-Provision QoD Slice on Risk</span>
+                  <span>Prefer QoD step-up on risk (provision on explicit confirm)</span>
                   <input
                     type="checkbox"
                     checked={requestQoD}
@@ -1295,26 +1382,34 @@ export default function AegisTelDashboard() {
 
                   <div className="bg-slate-950 border border-slate-800 p-3 rounded-lg space-y-1 w-full">
                     <span className="text-[10px] text-slate-200 uppercase flex items-center gap-1">
-                      <Radio className="w-3 h-3 text-indigo-400" /> QoD Slice Provisioning
+                      <Radio className="w-3 h-3 text-indigo-400" /> QoD Step-Up
                     </span>
-                    <div className="text-xs font-bold">
-                        {auditResult.telemetry.qod_session_active ? (
-                          (() => {
-                            const status = (auditResult.telemetry.qod_status || "").toUpperCase();
-                            const requestedSet = new Set(["REQUESTED", "REQUESTED_CREATED"]);
-                            const activeSet = new Set(["ACTIVE", "AVAILABLE"]);
-                            if (requestedSet.has(status)) {
-                              return <span className="text-cyan-300">QoD REQUESTED</span>;
-                            }
-                            if (activeSet.has(status)) {
-                              return <span className="text-emerald-400">ACTIVE QoD</span>;
-                            }
-                            return <span className="text-slate-400">QoD REQUESTED</span>;
-                          })()
+                    {qodProvisioned ? (
+                      <div className="text-xs font-bold text-emerald-400">
+                        <span>ACTIVE QoD SESSION</span>
+                        <div className="text-[10px] font-normal text-slate-400 mt-0.5 truncate">
+                          {(qodProvisioned.sessionId ?? "").replace("qod-sess-", "session ")} · {qodProvisioned.source ?? ""}
+                        </div>
+                      </div>
+                    ) : auditResult.qod_recommended ? (
+                      <div className="space-y-1.5">
+                        <div className="text-xs font-bold text-amber-300">RECOMMENDED</div>
+                        <button
+                          onClick={() => void provisionQoD()}
+                          disabled={qodProvisioning}
+                          className="w-full bg-indigo-500/20 hover:bg-indigo-500/40 disabled:opacity-50 border border-indigo-500/40 text-indigo-200 text-[10px] font-bold py-1.5 rounded transition cursor-pointer"
+                        >
+                          {qodProvisioning ? "PROVISIONING..." : "CONFIRM & PROVISION"}
+                        </button>
+                        {qodProvisionError ? (
+                          <div className="text-[9px] text-rose-400 leading-tight">{qodProvisionError}</div>
                         ) : (
-                          <span className="text-slate-200">INACTIVE</span>
+                          <div className="text-[9px] text-slate-500 leading-tight">Charges a Nokia QoD session; requires an authorized tenant or operator key</div>
                         )}
-                    </div>
+                      </div>
+                    ) : (
+                      <div className="text-xs font-bold text-slate-200">INACTIVE</div>
+                    )}
                   </div>
                 </div>
 
@@ -1349,7 +1444,7 @@ export default function AegisTelDashboard() {
                   const total = live + sandbox + local;
                   const source =
                     live > 0
-                      ? "LIVE SDK"
+                      ? "NaC SDK"
                       : sandbox > 0
                         ? "NOKIA SANDBOX"
                         : "LOCAL FALLBACK";
@@ -1365,7 +1460,7 @@ export default function AegisTelDashboard() {
                         {total === 0 ? "No Telemetry Evidence" : `Evidence Source: ${source}`}
                       </span>
                       <span className="text-slate-300">
-                        {live > 0 ? `${live} live SDK · ` : ""}
+                        {live > 0 ? `${live} NaC SDK · ` : ""}
                         {sandbox > 0 ? `${sandbox} sandbox · ` : ""}
                         {local > 0 ? `${local} local fallback` : ""}
                       </span>
@@ -1427,7 +1522,7 @@ export default function AegisTelDashboard() {
                               : tool.source === "LOCAL FALLBACK" ? "text-amber-300 border-amber-800 bg-amber-950"
                               : "text-slate-400 border-slate-700 bg-slate-950"
                             }`}>
-                              {tool.source === "Nokia NaC SDK" ? "LIVE SDK" : tool.source === "CAMARA REST" ? "REST" : tool.source === "LOCAL FALLBACK" ? "LOCAL FALLBACK" : "SANDBOX"}
+                              {tool.source === "Nokia NaC SDK" ? "NaC SDK" : tool.source === "CAMARA REST" ? "REST" : tool.source === "LOCAL FALLBACK" ? "LOCAL FALLBACK" : "SANDBOX"}
                             </span>
                             {tool.duration_ms != null ? <span className="text-[9px] text-slate-200">{tool.duration_ms}ms</span> : null}
                           </span>
@@ -1657,6 +1752,12 @@ export default function AegisTelDashboard() {
             )}
           </div>
         </div>
+      </div>
+      <div className="flex items-center justify-center gap-4 py-3 border-t border-slate-900">
+        <Link href="/privacy" className="text-[10px] uppercase tracking-[0.2em] text-slate-500 hover:text-cyan-400">
+          Privacy &amp; telecom data
+        </Link>
+        <span className="text-[10px] text-slate-700">GSMA MENA Ignite 2026 · Theme 4</span>
       </div>
       <CopilotWidget apiBase={apiBase} />
       <FeedbackWidget
