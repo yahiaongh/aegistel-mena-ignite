@@ -30,6 +30,7 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env")
 
 from app.agents.graph_orchestrator import execute_audit
 from app.agents.memory_agent import memory_engine
+from app.copilot_agent import answer as copilot_answer
 from app.feedback_store import build_summary, list_feedback, sanitize_ratings, submit_feedback
 from app.schemas.telemetry import AuditRequest, AuditResponse
 
@@ -296,6 +297,25 @@ async def read_feedback(request: Request, limit: int = 200) -> Dict[str, Any]:
         "summary": build_summary(list_feedback(5000)),
         "latest": records,
     }
+
+
+@router.post("/copilot/chat")
+async def copilot_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """AegisTel copilot: grounded platform Q&A (audit, tools, verdicts, drill,
+    business model, stack). Fast deterministic retrieval by default; pass
+    `enhance: true` to let the swarm's model chain polish the grounded answer,
+    degrading to the same grounded text if every provider is unavailable."""
+    question = str(payload.get("question") or "").strip()
+    if not question:
+        raise HTTPException(status_code=422, detail="question is required.")
+    raw_history = payload.get("history")
+    history = [h for h in raw_history if isinstance(h, dict)] if isinstance(raw_history, list) else []
+    return copilot_answer(
+        question,
+        history=history,
+        last_topic=str(payload["last_topic"]) if payload.get("last_topic") else None,
+        enhance=bool(payload.get("enhance", False)),
+    )
 
 
 @router.post("/audio/tts")

@@ -42,6 +42,7 @@ import {
   Radar,
 } from "recharts";
 import AuditFlowDiagram, { type FlowState, type FlowTool } from "./components/AuditFlowDiagram";
+import CopilotWidget from "./components/CopilotWidget";
 import FeedbackWidget from "./components/FeedbackWidget";
 
 interface ToolResult {
@@ -1548,6 +1549,7 @@ export default function AegisTelDashboard() {
           </div>
         </div>
       </div>
+      <CopilotWidget apiBase={apiBase} />
       <FeedbackWidget
         apiBase={apiBase}
         msisdn={msisdn}

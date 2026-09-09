@@ -140,7 +140,7 @@ touches a live model or the telecom SDK:
 
 ```bash
 cd backend
-../venv/bin/python -m pytest tests/ -q     # 98 offline tests + 1 opt-in live test
+../venv/bin/python -m pytest tests/ -q     # 119 offline tests + 1 opt-in live test
 
 # Opt-in live behavioral eval (needs real model keys; LLM-vs-deterministic gate):
 ../venv/bin/python -m pytest tests/test_behavioral_eval.py --run-live

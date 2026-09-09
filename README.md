@@ -298,6 +298,7 @@ location, roaming, QoD step-up) — the same drama the `otp-sim-swap` /
 | `POST` | `/api/memory/clear-all` | Reset the incident store (test/demo helper) |
 | `POST` | `/api/feedback` | Submit visitor feedback (≥1 star rating per feature; public) |
 | `GET` | `/api/feedback` | Founder-only readback (needs `AEGISTEL_ADMIN_KEY`; 401/503 otherwise) |
+| `POST` | `/api/copilot/chat` | Copilot Q&A over the platform FAQ (`enhance: true` adds LLM polish) |
 
 `GET /api/health` returns `"active_tool_count": 7` on a configured instance;
 dashboards repoll it every 20s.
