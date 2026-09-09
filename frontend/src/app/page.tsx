@@ -204,6 +204,18 @@ export default function AegisTelDashboard() {
 
   const activeAudioRef = useRef<HTMLAudioElement | null>(null);
 
+  const [navHeight, setNavHeight] = useState(56);
+  const navWrapRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = navWrapRef.current;
+    if (!el) return;
+    const update = () => setNavHeight(el.offsetHeight);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 
   useEffect(() => {
@@ -646,71 +658,74 @@ export default function AegisTelDashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-mono selection:bg-cyan-500 selection:text-slate-950 overflow-x-hidden">
-      <nav className="border-b border-slate-800 bg-slate-900/50 backdrop-blur sticky top-0 z-50 px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="p-2 rounded-lg bg-cyan-950 border border-cyan-800 text-cyan-400 shrink-0">
-            <Activity className="w-5 h-5 animate-pulse" />
-          </div>
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="text-base font-bold tracking-wider text-slate-100">AEGISTEL</h1>
-              <span className="text-[10px] bg-cyan-950 text-cyan-400 border border-cyan-800 px-1.5 py-0.5 rounded font-bold">
-                NOKIA NaC CAMARA SWARM
-              </span>
+    <div className="min-h-screen bg-slate-950 text-slate-100 font-mono selection:bg-cyan-500 selection:text-slate-950 overflow-x-clip">
+      <div ref={navWrapRef} className="fixed top-0 inset-x-0 z-50">
+        <nav className="border-b border-slate-800 bg-slate-900/50 backdrop-blur px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="p-2 rounded-lg bg-cyan-950 border border-cyan-800 text-cyan-400 shrink-0">
+              <Activity className="w-5 h-5 animate-pulse" />
             </div>
-            <p className="hidden sm:block text-[11px] text-slate-400 truncate">Multi-Agent Telecom Fraud & Network Intelligence Platform</p>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h1 className="text-base font-bold tracking-wider text-slate-100">AEGISTEL</h1>
+                <span className="text-[10px] bg-cyan-950 text-cyan-400 border border-cyan-800 px-1.5 py-0.5 rounded font-bold">
+                  NOKIA NaC CAMARA SWARM
+                </span>
+              </div>
+              <p className="hidden sm:block text-[11px] text-slate-400 truncate">Multi-Agent Telecom Fraud & Network Intelligence Platform</p>
+            </div>
           </div>
-        </div>
 
-        <div className="flex flex-wrap items-center gap-2 text-xs ml-auto">
-          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-md border ${requestStatus === "ready" ? "bg-emerald-950 border-emerald-800 text-emerald-300" : requestStatus === "requesting" ? "bg-cyan-950 border-cyan-800 text-cyan-300" : "bg-slate-900 border-slate-800 text-slate-400"}`}>
-            <RadioTower className="w-3.5 h-3.5" />
-            <span className="font-bold">API {requestStatus.toUpperCase()}</span>
-          </div>
-          {isSpeaking && (
-            <div className="flex items-center gap-2 bg-rose-950 border border-rose-800 text-rose-400 px-3 py-1.5 rounded-md animate-pulse">
-              <Volume2 className="w-4 h-4" />
-              <span className="font-bold">AUDIO BRIEFING</span>
+          <div className="flex flex-wrap items-center gap-2 text-xs ml-auto">
+            <div className={`flex items-center gap-2 px-3 py-1.5 rounded-md border ${requestStatus === "ready" ? "bg-emerald-950 border-emerald-800 text-emerald-300" : requestStatus === "requesting" ? "bg-cyan-950 border-cyan-800 text-cyan-300" : "bg-slate-900 border-slate-800 text-slate-400"}`}>
+              <RadioTower className="w-3.5 h-3.5" />
+              <span className="font-bold">API {requestStatus.toUpperCase()}</span>
             </div>
-          )}
-          <button
-            type="button"
-            onClick={() => {
-              setVoiceEnabled((prev) => {
-                const next = !prev;
-                if (!next) {
-                  if (activeAudioRef.current) {
-                    activeAudioRef.current.pause();
-                    activeAudioRef.current.currentTime = 0;
-                    activeAudioRef.current = null;
+            {isSpeaking && (
+              <div className="flex items-center gap-2 bg-rose-950 border border-rose-800 text-rose-400 px-3 py-1.5 rounded-md animate-pulse">
+                <Volume2 className="w-4 h-4" />
+                <span className="font-bold">AUDIO BRIEFING</span>
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                setVoiceEnabled((prev) => {
+                  const next = !prev;
+                  if (!next) {
+                    if (activeAudioRef.current) {
+                      activeAudioRef.current.pause();
+                      activeAudioRef.current.currentTime = 0;
+                      activeAudioRef.current = null;
+                    }
+                    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+                      window.speechSynthesis.cancel();
+                    }
+                    setIsSpeaking(false);
                   }
-                  if (typeof window !== "undefined" && "speechSynthesis" in window) {
-                    window.speechSynthesis.cancel();
-                  }
-                  setIsSpeaking(false);
-                }
-                return next;
-              });
-            }}
-            aria-pressed={voiceEnabled}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-md border font-bold cursor-pointer select-none ${voiceEnabled ? "bg-cyan-950 border-cyan-800 text-cyan-300" : "bg-slate-900 border-slate-700 text-slate-500"}`}
-          >
-            <Volume2 className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">{voiceEnabled ? "VOICE ON" : "VOICE MUTED"}</span>
-          </button>
-          <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-md">
-            <RadioTower className="w-3.5 h-3.5 text-cyan-400" />
-            <span className="hidden sm:inline text-slate-400">APIs Integrated:</span>
-            <span className="text-cyan-300 font-bold">{activeSignalCount ?? "—"} <span className="hidden sm:inline">CAMARA Signals</span></span>
+                  return next;
+                });
+              }}
+              aria-pressed={voiceEnabled}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-md border font-bold cursor-pointer select-none ${voiceEnabled ? "bg-cyan-950 border-cyan-800 text-cyan-300" : "bg-slate-900 border-slate-700 text-slate-500"}`}
+            >
+              <Volume2 className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">{voiceEnabled ? "VOICE ON" : "VOICE MUTED"}</span>
+            </button>
+            <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-md">
+              <RadioTower className="w-3.5 h-3.5 text-cyan-400" />
+              <span className="hidden sm:inline text-slate-400">APIs Integrated:</span>
+              <span className="text-cyan-300 font-bold">{activeSignalCount ?? "—"} <span className="hidden sm:inline">CAMARA Signals</span></span>
+            </div>
+            <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-md">
+              <ShieldCheck className="w-3.5 h-3.5 text-amber-400" />
+              <span className="hidden sm:inline text-slate-400">Protected this session:</span>
+              <span className="text-amber-300 font-bold">${sessionStats.protectedAmount.toLocaleString()}</span>
+            </div>
           </div>
-          <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-md">
-            <ShieldCheck className="w-3.5 h-3.5 text-amber-400" />
-            <span className="hidden sm:inline text-slate-400">Protected this session:</span>
-            <span className="text-amber-300 font-bold">${sessionStats.protectedAmount.toLocaleString()}</span>
-          </div>
-        </div>
-      </nav>
+        </nav>
+      </div>
+      <div style={{ height: navHeight }} />
 
       <div className="p-4 sm:p-6 max-w-[1600px] mx-auto grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-6">
         <div className="lg:col-span-4 space-y-6">
