@@ -360,9 +360,12 @@ async def provider_probe(operator: str = Depends(_require_operator)) -> Dict[str
 async def audit_history(
     msisdn: str,
     limit: int = 10,
-    tenant: str = "demo",
     operator: str = Depends(_require_operator),
 ):
+    # Operator (admin) can view history for the default tenant namespace.
+    # Tenant isolation applies to tenant API keys; the operator views the
+    # default tenant's history (where demo/audit records are stored).
+    tenant = settings.AEGISTEL_DEFAULT_TENANT
     incidents = memory_engine.list_all_incidents(msisdn, tenant_id=tenant)
     # local store is append-ordered (oldest first): serve the most RECENT
     # `limit` records so the operator's risk trend reflects current history,

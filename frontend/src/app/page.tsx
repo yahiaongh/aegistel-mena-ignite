@@ -1304,7 +1304,7 @@ export default function AegisTelDashboard() {
               ) : drillLoading ? (
                 <div className="py-4 flex items-center justify-center space-x-2 text-[11px] text-rose-300">
                   <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                  <span>Fraud Genie is writing attack plays... executing against the crew...</span>
+                  <span>Executing attacks against the crew...</span>
                 </div>
               ) : (
                 <div className="mt-3 text-[11px] text-slate-200 italic border border-dashed border-slate-800 rounded p-3">
