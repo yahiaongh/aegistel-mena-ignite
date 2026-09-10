@@ -1817,7 +1817,7 @@ export default function AegisTelDashboard() {
         <Link href="/privacy" className="text-[10px] uppercase tracking-[0.2em] text-slate-500 hover:text-cyan-400">
           Privacy &amp; telecom data
         </Link>
-        <span className="text-[10px] text-slate-700">GSMA MENA Ignite 2026 · Theme 4</span>
+        <span className="text-[10px] text-slate-700">GSMA MENA Ignite 2026 · Theme 4 Secure Fintech, Payments & Anti-Fraud Innovation</span>
       </div>
       <CopilotWidget apiBase={apiBase} />
       <FeedbackWidget

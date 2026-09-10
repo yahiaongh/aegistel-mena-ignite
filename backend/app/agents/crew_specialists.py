@@ -173,8 +173,7 @@ def plan_tool_calls(request_context: Dict[str, Any]) -> Dict[str, Any]:
             f"Value-movement {transaction_type or 'payment'} flow: identity, geo presence, roaming "
             "and reachability are required evidence for settlement. Device swap, number recycling, "
             "congestion are deferred as secondary contextual signals and "
-            "pulled in only when the risk scan or value warrants it. KYC Match is available for "
-            "onboarding and identity verification flows."
+            "pulled in only when the risk scan or value warrants it."
         )
 
     return {
