@@ -86,6 +86,7 @@ interface NokiaTelemetry {
   evidence_summary?: { live_sdk?: number; sandbox?: number; local_fallback?: number };
   tool_results?: ToolResult[];
   device_swapped?: boolean | null;
+  device_swap_detected?: boolean | null;
   number_recycled?: boolean | null;
 }
 
@@ -1097,6 +1098,8 @@ export default function AegisTelDashboard() {
                         { subject: 'Reachability', A: (auditResult.telemetry.reachability_status || '').toUpperCase() === 'UNREACHABLE' ? 1 : 0, note: auditResult.telemetry.reachability_status },
                         { subject: 'Number Verify', A: (auditResult.telemetry.number_verification_status || '') !== 'VERIFIED' ? 1 : 0, note: auditResult.telemetry.number_verification_status || 'UNKNOWN' },
                         { subject: 'Congestion', A: (auditResult.telemetry.max_congestion_level || 'low').toLowerCase() === 'high' ? 1 : 0, note: auditResult.telemetry.max_congestion_level || 'LOW' },
+                        { subject: 'Device Swap', A: auditResult.telemetry.device_swap_detected === true ? 1 : 0, note: auditResult.telemetry.device_swap_detected === true ? 'Flagged' : 'Clear' },
+                        { subject: 'Num Recycle', A: auditResult.telemetry.number_recycled === true ? 1 : 0, note: auditResult.telemetry.number_recycled === true ? 'Flagged' : 'Clear' },
                         { subject: 'QoD', A: auditResult.telemetry.qod_status ? 1 : 0, note: `${auditResult.telemetry.qod_status || 'NONE'}${auditResult.telemetry.qod_profile ? ' • ' + auditResult.telemetry.qod_profile : ''}` },
                       ]}
                     >
@@ -1120,14 +1123,24 @@ export default function AegisTelDashboard() {
                       <div className="font-semibold text-slate-100">{auditResult.telemetry.sim_swap_detected ? 'Flagged' : 'Clean'}</div>
                     </div>
                     <div className="rounded-lg border border-slate-800 bg-slate-950/70 p-2">
-                      <div className="text-[10px] text-slate-200 uppercase">QoD</div>
-                      <div className="font-semibold text-slate-100">{auditResult.telemetry.qod_status ? (
-                        <span className={auditResult.status === "APPROVED" ? "text-cyan-300" : "text-rose-400"}>
-                          {`${auditResult.telemetry.qod_status}${auditResult.telemetry.qod_profile ? ' • ' + auditResult.telemetry.qod_profile : ''}`}
-                        </span>
-                      ) : (
-                        <span className="text-slate-200">NONE</span>
-                      )}</div>
+                      <div className="text-[10px] text-slate-200 uppercase">Device Swap</div>
+                      <div className="font-semibold text-slate-100">{auditResult.telemetry.device_swap_detected ? 'Flagged' : 'Clear'}</div>
+                    </div>
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/70 p-2">
+                      <div className="text-[10px] text-slate-200 uppercase">Number Recycle</div>
+                      <div className="font-semibold text-slate-100">{auditResult.telemetry.number_recycled ? 'Flagged' : 'Clear'}</div>
+                    </div>
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/70 p-2">
+                      <div className="text-[10px] text-slate-200 uppercase">Location / Geofence</div>
+                      <div className="font-semibold text-slate-100">{auditResult.telemetry.geofence_status}</div>
+                    </div>
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/70 p-2">
+                      <div className="text-[10px] text-slate-200 uppercase">Roaming</div>
+                      <div className="font-semibold text-slate-100">{auditResult.telemetry.roaming_status}</div>
+                    </div>
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/70 p-2">
+                      <div className="text-[10px] text-slate-200 uppercase">Reachability</div>
+                      <div className="font-semibold text-slate-100">{auditResult.telemetry.reachability_status}</div>
                     </div>
                     <div className="rounded-lg border border-slate-800 bg-slate-950/70 p-2">
                       <div className="text-[10px] text-slate-200 uppercase">Number Verification</div>
@@ -1144,6 +1157,16 @@ export default function AegisTelDashboard() {
                           {auditResult.telemetry.max_congestion_level || 'LOW'}
                         </span>
                       </div>
+                    </div>
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/70 p-2">
+                      <div className="text-[10px] text-slate-200 uppercase">QoD</div>
+                      <div className="font-semibold text-slate-100">{auditResult.telemetry.qod_status ? (
+                        <span className={auditResult.status === "APPROVED" ? "text-cyan-300" : "text-rose-400"}>
+                          {`${auditResult.telemetry.qod_status}${auditResult.telemetry.qod_profile ? ' • ' + auditResult.telemetry.qod_profile : ''}`}
+                        </span>
+                      ) : (
+                        <span className="text-slate-200">NONE</span>
+                      )}</div>
                     </div>
                   </div>
                 </div>
@@ -1436,7 +1459,7 @@ export default function AegisTelDashboard() {
                       <Phone className="w-3 h-3 text-violet-400" /> Device Swap
                     </span>
                     <div className="text-xs font-bold">
-                      {auditResult.telemetry.device_swapped === true ? <span className="text-rose-400">SWAPPEDE</span> : auditResult.telemetry.device_swapped === false ? <span className="text-emerald-400">CLEAN</span> : <span className="text-slate-400">UNKNOWN</span>}
+                      {auditResult.telemetry.device_swap_detected === true ? <span className="text-rose-400">SWAPPED</span> : auditResult.telemetry.device_swap_detected === false ? <span className="text-emerald-400">CLEAN</span> : <span className="text-slate-400">UNKNOWN</span>}
                     </div>
                   </div>
 
