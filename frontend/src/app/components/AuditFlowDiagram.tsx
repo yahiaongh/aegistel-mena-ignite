@@ -3,13 +3,11 @@
 import React from "react";
 import {
   Activity,
-  Calendar,
   CheckCircle2,
   Cpu,
   Globe,
   Loader2,
   MapPin,
-  PhoneIncoming,
   RadioTower,
   RotateCcw,
   ShieldCheck,
@@ -46,10 +44,8 @@ const ICON_MAP: Record<string, ToolIconComponent> = {
   verify_number: ShieldCheck,
   get_congestion_insights: Activity,
   create_qod_session: Zap,
-  check_call_forwarding: PhoneIncoming,
   check_device_swap: RotateCcw,
   check_number_recycling: Activity,
-  check_kyc_tenure: Calendar,
   check_kyc_match: ShieldCheck,
 };
 
@@ -67,10 +63,8 @@ function getToolLabel(name: string): string {
     case "verify_number": return "NUMBER VRFY";
     case "get_congestion_insights": return "CONGESTION";
     case "create_qod_session": return "QoD SLICE";
-    case "check_call_forwarding": return "CALL FWD";
     case "check_device_swap": return "DEV SWAP";
     case "check_number_recycling": return "NUM RECYCLE";
-    case "check_kyc_tenure": return "KYC TENURE";
     case "check_kyc_match": return "KYC MATCH";
     default: return name.toUpperCase();
   }
@@ -85,10 +79,8 @@ function getToolShort(name: string): string {
     case "verify_number": return "NV";
     case "get_congestion_insights": return "CG";
     case "create_qod_session": return "QoD";
-    case "check_call_forwarding": return "FWD";
     case "check_device_swap": return "DSW";
     case "check_number_recycling": return "NRC";
-    case "check_kyc_tenure": return "KYC";
     case "check_kyc_match": return "KYM";
     default: return name.slice(0, 3).toUpperCase();
   }

@@ -39,6 +39,8 @@ class FinalAssessment(BaseModel):
     qod_session_active: bool = Field(False)
     qod_profile: str | None = Field(None)
     qod_status: str | None = Field(None)
+    device_swap_detected: bool | None = Field(None)
+    number_recycled: bool | None = Field(None)
     reasoning: str = Field(...)
     recommended_action: str = Field(...)
 
@@ -300,6 +302,10 @@ async def execute_audit(request: AuditRequest, progress_callback: Any | None = N
     telemetry = NokiaApiTelemetry(
         device_swap_detected=next(
             (item.get("deviceSwapped") for item in tool_results if item.get("deviceSwapped") is not None),
+            None,
+        ),
+        number_recycled=next(
+            (item.get("phoneNumberRecycled") for item in tool_results if item.get("phoneNumberRecycled") is not None),
             None,
         ),
         sim_swap_detected=assessment.sim_swap_detected,

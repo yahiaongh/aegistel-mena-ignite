@@ -16,11 +16,9 @@ Crew = None
 Task = None
 
 from app.agents.tools import (
-    check_call_forwarding,
     check_device_reachability,
     check_device_swap,
     check_kyc_match,
-    check_kyc_tenure,
     check_number_recycling,
     check_roaming_status,
     check_sim_swap,
@@ -108,14 +106,12 @@ HIGH_RISK_TX_TYPES = {"CROSS_BORDER_SWIFT", "SAME_DAY_WIRE", "GIFT_CARD_TOPUP"}
 SIGNAL_TOOL_NAMES: Dict[str, str] = {
     "sim": "check_sim_swap",
     "device_swap": "check_device_swap",
-    "call_forwarding": "check_call_forwarding",
     "number_recycling": "check_number_recycling",
     "number_verification": "verify_number",
     "location": "verify_location",
     "roaming": "check_roaming_status",
     "reachability": "check_device_reachability",
     "congestion": "get_congestion_insights",
-    "kyc_tenure": "check_kyc_tenure",
     "kyc_match": "check_kyc_match",
 }
 TOOL_SIGNAL_KEY: Dict[str, str] = {v: k for k, v in SIGNAL_TOOL_NAMES.items()}
@@ -126,14 +122,12 @@ _CORE_TOOLS = [
     "verify_number",
     "verify_location",
     "check_device_reachability",
-    "check_call_forwarding",
 ]
 _REFERENCE_TOOLS = [
     "check_roaming_status",
     "check_device_swap",
     "check_number_recycling",
     "get_congestion_insights",
-    "check_kyc_tenure",
 ]
 
 # Convenience / low-touch flows: identity + geo + reachability suffice; roaming
@@ -169,18 +163,18 @@ def plan_tool_calls(request_context: Dict[str, Any]) -> Dict[str, Any]:
         deferred = list(_REFERENCE_TOOLS)
         rationale = (
             f"Low-touch {transaction_type or 'payment'} flow: decisive evidence is device identity "
-            "and line integrity (SIM swap status, call forwarding, silent number binding, geo presence, "
-            "reachability). Roaming, device swap, number recycling, congestion, and subscriber tenure "
+            "and line integrity (SIM swap status, silent number binding, geo presence, "
+            "reachability). Roaming, device swap, number recycling, congestion "
             "are deferred; they are pulled in only if the first risk scan or the transaction value "
             "justifies a deeper inspection pass."
         )
     else:
         required = list(_CORE_TOOLS) + ["check_roaming_status"]
-        deferred = ["check_device_swap", "check_number_recycling", "get_congestion_insights", "check_kyc_tenure"]
+        deferred = ["check_device_swap", "check_number_recycling", "get_congestion_insights"]
         rationale = (
             f"Value-movement {transaction_type or 'payment'} flow: identity, geo presence, roaming "
             "and reachability are required evidence for settlement. Device swap, number recycling, "
-            "congestion, and subscriber tenure are deferred as secondary contextual signals and "
+            "congestion are deferred as secondary contextual signals and "
             "pulled in only when the risk scan or value warrants it. KYC Match is available for "
             "onboarding and identity verification flows."
         )
@@ -1307,12 +1301,8 @@ def run_specialist_crew(
             return (name, lambda: _run_tool_payload("verify_number", verify_number, msisdn=msisdn))
         if name == "get_congestion_insights":
             return (name, lambda: _run_tool_payload("get_congestion_insights", get_congestion_insights, msisdn=msisdn))
-        if name == "check_call_forwarding":
-            return (name, lambda: _run_tool_payload("check_call_forwarding", check_call_forwarding, msisdn=msisdn))
         if name == "check_number_recycling":
             return (name, lambda: _run_tool_payload("check_number_recycling", check_number_recycling, msisdn=msisdn))
-        if name == "check_kyc_tenure":
-            return (name, lambda: _run_tool_payload("check_kyc_tenure", check_kyc_tenure, msisdn=msisdn))
         if name == "check_kyc_match":
             return (name, lambda: _run_tool_payload("check_kyc_match", check_kyc_match, msisdn=msisdn))
         raise ValueError(f"Unknown planned tool {name}")

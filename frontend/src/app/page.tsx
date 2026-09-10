@@ -5,7 +5,6 @@ import React, { useEffect, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
-  Calendar,
   CheckCircle2,
   Cpu,
   ChevronDown,
@@ -14,7 +13,6 @@ import {
   Globe,
   MapPin,
   Phone,
-  PhoneIncoming,
   Radio,
   RadioTower,
   RefreshCw,
@@ -87,11 +85,8 @@ interface NokiaTelemetry {
   cross_border_risk?: boolean;
   evidence_summary?: { live_sdk?: number; sandbox?: number; local_fallback?: number };
   tool_results?: ToolResult[];
-  call_forwarding?: { forwardings?: string[]; unconditional_active?: boolean };
   device_swapped?: boolean | null;
   number_recycled?: boolean | null;
-  kyc_tenure_check?: boolean | null;
-  kyc_contract_type?: string;
 }
 
 interface AuditResponse {
@@ -171,12 +166,10 @@ const INITIAL_FLOW_TOOLS: FlowTool[] = [
   { name: "verify_location", state: "pending" },
   { name: "verify_number", state: "pending" },
   { name: "check_device_reachability", state: "pending" },
-  { name: "check_call_forwarding", state: "pending" },
   { name: "check_roaming_status", state: "pending" },
   { name: "check_device_swap", state: "pending" },
   { name: "check_number_recycling", state: "pending" },
   { name: "get_congestion_insights", state: "pending" },
-  { name: "check_kyc_tenure", state: "pending" },
   { name: "create_qod_session", state: "pending" },
 ];
 
@@ -185,12 +178,10 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   verify_location: "Location Verification",
   verify_number: "Number Verification",
   check_device_reachability: "Device Reachability",
-  check_call_forwarding: "Call Forwarding",
   check_roaming_status: "Roaming Status",
   check_device_swap: "Device Swap",
   check_number_recycling: "Number Recycling",
   get_congestion_insights: "Congestion Insights",
-  check_kyc_tenure: "KYC Tenure",
   check_kyc_match: "KYC Match",
   create_qod_session: "QoD Session",
 };
@@ -1436,24 +1427,9 @@ export default function AegisTelDashboard() {
                           <div className="text-[9px] text-slate-500 leading-tight">Charges a Nokia QoD session; requires an authorized tenant or operator key</div>
                         )}
                       </div>
-                    ) : (
+) : (
                       <div className="text-xs font-bold text-slate-200">INACTIVE</div>
                     )}
-                  </div>
-
-                  <div className="bg-slate-950 border border-slate-800 p-3 rounded-lg space-y-1 w-full">
-                    <span className="text-[10px] text-slate-200 uppercase flex items-center gap-1">
-                      <PhoneIncoming className="w-3 h-3 text-cyan-400" /> Call Forwarding
-                    </span>
-                    <div className="text-xs font-bold">
-                      {(() => {
-                        const fwd = auditResult.telemetry.call_forwarding;
-                        if (!fwd) return <span className="text-slate-400">NO DATA</span>;
-                        if (fwd.unconditional_active) return <span className="text-rose-400">UNCONDITIONAL ACTIVE</span>;
-                        if (fwd.forwardings && fwd.forwardings.length > 0) return <span className="text-amber-400">{fwd.forwardings.join(", ").toUpperCase()}</span>;
-                        return <span className="text-emerald-400">NONE</span>;
-                      })()}
-                    </div>
                   </div>
 
                   <div className="bg-slate-950 border border-slate-800 p-3 rounded-lg space-y-1 w-full">
@@ -1461,7 +1437,7 @@ export default function AegisTelDashboard() {
                       <Phone className="w-3 h-3 text-violet-400" /> Device Swap
                     </span>
                     <div className="text-xs font-bold">
-                      {auditResult.telemetry.device_swapped === true ? <span className="text-rose-400">SWAPPED</span> : auditResult.telemetry.device_swapped === false ? <span className="text-emerald-400">CLEAN</span> : <span className="text-slate-400">UNKNOWN</span>}
+                      {auditResult.telemetry.device_swapped === true ? <span className="text-rose-400">SWAPPEDE</span> : auditResult.telemetry.device_swapped === false ? <span className="text-emerald-400">CLEAN</span> : <span className="text-slate-400">UNKNOWN</span>}
                     </div>
                   </div>
 
@@ -1473,16 +1449,6 @@ export default function AegisTelDashboard() {
                       {auditResult.telemetry.number_recycled === true ? <span className="text-rose-400">RECYCLED</span> : auditResult.telemetry.number_recycled === false ? <span className="text-emerald-400">NOT RECYCLED</span> : <span className="text-slate-400">UNKNOWN</span>}
                     </div>
                   </div>
-
-                  <div className="bg-slate-950 border border-slate-800 p-3 rounded-lg space-y-1 w-full">
-                    <span className="text-[10px] text-slate-200 uppercase flex items-center gap-1">
-                      <Calendar className="w-3 h-3 text-emerald-400" /> KYC Tenure
-                    </span>
-                    <div className="text-xs font-bold">
-                      {auditResult.telemetry.kyc_tenure_check === true ? <span className="text-emerald-400">ESTABLISHED ({auditResult.telemetry.kyc_contract_type ?? "UNKNOWN"})</span> : auditResult.telemetry.kyc_tenure_check === false ? <span className="text-rose-400">NEW ACCOUNT</span> : <span className="text-slate-400">UNKNOWN</span>}
-                    </div>
-                  </div>
-
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
