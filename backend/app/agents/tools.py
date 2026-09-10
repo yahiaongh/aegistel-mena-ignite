@@ -61,10 +61,18 @@ NOKIA_API_KEY = os.getenv("NOKIA_NAC_API_KEY", "sandbox-key")
 try:
     from network_as_code import NetworkAsCodeApi
 
+    print(f"[TOOLS INIT] NOKIA_API_KEY configured: {'YES' if NOKIA_API_KEY != 'sandbox-key' else 'NO (using sandbox-key)'}")
     nac_client = NetworkAsCodeApi(
         api_key=NOKIA_API_KEY, rapidapi_host="network-as-code.nokia.rapidapi.com"
     )
-except Exception:
+    print(f"[TOOLS INIT] nac_client initialized: {nac_client is not None}")
+    if nac_client:
+        print(f"[TOOLS INIT] Available modules: {[a for a in dir(nac_client) if not a.startswith('_')]}")
+        print(f"[TOOLS INIT] Has number_verification: {hasattr(nac_client, 'number_verification')}")
+except Exception as e:
+    print(f"[TOOLS INIT] nac_client initialization failed: {type(e).__name__}: {e}")
+    import traceback
+    traceback.print_exc()
     nac_client = None
 
 
@@ -641,6 +649,7 @@ def verify_number(msisdn: str) -> str:
     print(f"\n[NUMVER] --- EXECUTING verify_number TOOL ---")
     print(f"[NUMVER] Target MSISDN: {msisdn}")
     print(f"[NUMVER] SDK Available: {bool(nac_client)} | NV Module: {hasattr(nac_client, 'number_verification') if nac_client else False}")
+    print(f"[NUMVER] NOKIA_API_KEY configured: {'YES' if NOKIA_API_KEY != 'sandbox-key' else 'NO (using sandbox-key)'}")
 
     # 1. Primary Method: Official Nokia NaC Python SDK
     if nac_client and hasattr(nac_client, "number_verification"):
@@ -657,6 +666,7 @@ def verify_number(msisdn: str) -> str:
             # redirect (client.oauth); on the sandbox the direct phone_number
             # request is accepted unless the API key lacks Number Verification
             # entitlement, in which case we degrade to the fallbacks below.
+            print(f"[NUMVER] Calling SDK verify_v2 for {msisdn}")
             verify_result = nac_client.number_verification.verify_v2(
                 request={"phone_number": msisdn}
             )
@@ -674,16 +684,26 @@ def verify_number(msisdn: str) -> str:
             return output_json
 
         except Exception as e:
-            print(f"[NUMVER:SDK ERROR] Nokia NaC SDK Number Verification failed: {e}")
+            print(f"[NUMVER:SDK ERROR] Nokia NaC SDK Number Verification failed: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+
+    else:
+        if not nac_client:
+            print("[NUMVER] nac_client is None - SDK not initialized")
+        elif not hasattr(nac_client, "number_verification"):
+            print(f"[NUMVER] nac_client has NO number_verification attribute. Available attrs: {[a for a in dir(nac_client) if not a.startswith('_')]}")
 
     # 2. Fallback Method: Direct Nokia CAMARA REST API Call
     # Nokia NaC's documented Number Verification v2 passthrough. Retain the
     # SDK-first path above; this REST route is the confirmed fallback endpoint.
     url = f"{NOKIA_BASE_URL}/number-verification/number-verification/v2/verify"
+    print(f"[NUMVER] Trying REST fallback to {url}")
     try:
         response = requests.post(
             url, json={"phoneNumber": msisdn}, headers=_get_headers(), timeout=5
         )
+        print(f"[NUMVER] REST Response: HTTP {response.status_code}")
         if response.status_code == 200:
             data = response.json()
             verified = data.get("devicePhoneNumberVerified")
@@ -697,8 +717,12 @@ def verify_number(msisdn: str) -> str:
             output_json = _safe_json(res_payload)
             print(f"[NUMVER:REST SUCCESS] Response Payload: {output_json}")
             return output_json
+        else:
+            print(f"[NUMVER:REST ERROR] HTTP {response.status_code}: {response.text[:500]}")
     except Exception as e:
-        print(f"[NUMVER:REST ERROR] Nokia NaC REST API Number Verification request failed: {e}")
+        print(f"[NUMVER:REST ERROR] Nokia NaC REST API Number Verification request failed: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
 
     # 3. Fallback Method: Simulated Sandbox Data
     # Documented demo numbers: the fraud-test subscriber (+99999991000) fails

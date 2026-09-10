@@ -356,6 +356,92 @@ async def provider_probe(operator: str = Depends(_require_operator)) -> Dict[str
     return {"probes": probes}
 
 
+@router.get("/diagnostics/number_verification")
+async def number_verification_diagnostics(operator: str = Depends(_require_operator)) -> Dict[str, Any]:
+    """Diagnostics for Number Verification endpoint.
+    
+    Proves from inside the host (e.g. Render) whether the Number Verification
+    endpoint is reachable via SDK and/or REST, and whether the API key has
+    the required entitlement. Gated behind operator auth.
+    """
+    from app.agents.tools import nac_client, NOKIA_API_KEY, NOKIA_BASE_URL
+    import requests
+    import time
+    
+    results = {
+        "nokia_api_key_configured": NOKIA_API_KEY != "sandbox-key",
+        "sdk_initialized": nac_client is not None,
+        "sdk_has_number_verification": hasattr(nac_client, "number_verification") if nac_client else False,
+        "sdk_modules": [a for a in dir(nac_client) if not a.startswith('_')] if nac_client else [],
+        "sdk_test": None,
+        "rest_test": None,
+    }
+    
+    # Test SDK path
+    if nac_client and hasattr(nac_client, "number_verification"):
+        try:
+            started = time.monotonic()
+            verify_result = nac_client.number_verification.verify_v2(
+                request={"phone_number": "+99999991000"}  # Known test number
+            )
+            verified = getattr(verify_result, "device_phone_number_verified", None)
+            results["sdk_test"] = {
+                "success": True,
+                "latency_ms": round((time.monotonic() - started) * 1000, 1),
+                "verified": verified,
+                "source": "Nokia NaC SDK",
+            }
+        except Exception as e:
+            results["sdk_test"] = {
+                "success": False,
+                "error": f"{type(e).__name__}: {e}",
+            }
+    else:
+        results["sdk_test"] = {
+            "success": False,
+            "error": "nac_client is None or missing number_verification attribute",
+        }
+    
+    # Test REST path
+    url = f"{NOKIA_BASE_URL}/number-verification/number-verification/v2/verify"
+    try:
+        started = time.monotonic()
+        response = requests.post(
+            url, json={"phoneNumber": "+99999991000"}, 
+            headers={
+                "Content-Type": "application/json",
+                "x-rapid-api-host": "network-as-code.nokia.rapidapi.com",
+                "x-rapidapi-key": NOKIA_API_KEY,
+            },
+            timeout=10
+        )
+        latency_ms = round((time.monotonic() - started) * 1000, 1)
+        if response.status_code == 200:
+            data = response.json()
+            verified = data.get("devicePhoneNumberVerified")
+            results["rest_test"] = {
+                "success": True,
+                "latency_ms": latency_ms,
+                "http_status": 200,
+                "verified": verified,
+                "source": "Nokia NaC REST API",
+            }
+        else:
+            results["rest_test"] = {
+                "success": False,
+                "latency_ms": latency_ms,
+                "http_status": response.status_code,
+                "error": response.text[:200],
+            }
+    except Exception as e:
+        results["rest_test"] = {
+            "success": False,
+            "error": f"{type(e).__name__}: {e}",
+        }
+    
+    return results
+
+
 @router.get("/v1/history/{msisdn}")
 async def audit_history(
     msisdn: str,
