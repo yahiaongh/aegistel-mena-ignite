@@ -10,9 +10,11 @@ import {
   ChevronDown,
   ChevronUp,
   DollarSign,
+  Download,
   Globe,
   MapPin,
   Phone,
+  Printer,
   Radio,
   RadioTower,
   RefreshCw,
@@ -788,6 +790,307 @@ export default function AegisTelDashboard() {
     }
   };
 
+  // ===== EXPORT FUNCTIONS =====
+  const exportToHTML = () => {
+    if (!auditResult) return;
+    
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filename = `aegistel-audit-${auditResult.msisdn}-${timestamp}.html`;
+    
+    const html = generateHTMLReport(auditResult, history);
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const exportToPDF = async () => {
+    if (!auditResult) return;
+    
+    const { jsPDF } = await import('jspdf');
+    const html2canvas = (await import('html2canvas')).default;
+    
+    const pdf = new jsPDF({
+      orientation: 'portrait',
+      unit: 'mm',
+      format: 'a4',
+    });
+    
+    pdf.setFont('times', 'normal');
+    
+    const dateStr = new Date().toISOString().split('T')[0];
+    const filename = `aegistel-audit-${auditResult.msisdn}-${dateStr}.pdf`;
+    
+    // Create a temporary container for PDF rendering
+    const container = document.createElement('div');
+    container.style.position = 'absolute';
+    container.style.left = '-9999px';
+    container.style.width = '210mm';
+    container.style.padding = '20mm';
+    container.style.background = 'white';
+    container.style.color = 'black';
+    container.style.fontFamily = 'Times New Roman, Times, serif';
+    container.style.fontSize = '11pt';
+    container.style.lineHeight = '1.5';
+    container.innerHTML = generatePDFContent(auditResult, history);
+    document.body.appendChild(container);
+    
+    try {
+      const canvas = await html2canvas(container, {
+        scale: 2,
+        useCORS: true,
+        logging: false,
+        backgroundColor: '#ffffff',
+        windowWidth: 794,
+      });
+      
+      const imgData = canvas.toDataURL('image/png');
+      const imgWidth = 210;
+      const imgHeight = (canvas.height * imgWidth) / canvas.width;
+      const pageHeight = 297;
+      let heightLeft = imgHeight;
+      let position = 0;
+      
+      pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+      heightLeft -= pageHeight;
+      
+      while (heightLeft > 0) {
+        position -= pageHeight;
+        pdf.addPage();
+        pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+        heightLeft -= pageHeight;
+      }
+      
+      pdf.save(filename);
+    } finally {
+      document.body.removeChild(container);
+    }
+  };
+
+  const generateHTMLReport = (result: AuditResponse, _hist: HistoryResponse | null): string => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const _ = _hist;
+    const date = new Date().toLocaleString('en-GB', { timeZone: 'UTC' });
+    const tools = result.telemetry.tool_results ?? [];
+    
+    const statusColors: Record<string, string> = {
+      APPROVED: '#22c55e',
+      STEP_UP_REQUIRED: '#f59e0b',
+      BLOCKED: '#ef4444',
+      REJECTED: '#ef4444',
+      MANUAL_REVIEW: '#f59e0b',
+    };
+    
+    const riskColors: Record<string, string> = {
+      LOW: '#22c55e',
+      MEDIUM: '#f59e0b',
+      HIGH: '#f59e0b',
+      CRITICAL: '#ef4444',
+    };
+    
+    const statusColor = statusColors[result.status] || '#64748b';
+    const riskColor = riskColors[result.risk_score] || '#64748b';
+    
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AegisTel Audit Report - ${result.msisdn}</title>
+  <style>
+    body { font-family: 'Times New Roman', Times, serif; margin: 0; padding: 40px; background: #fff; color: #1e293b; line-height: 1.6; }
+    .header { border-bottom: 3px solid #0891b2; padding-bottom: 20px; margin-bottom: 30px; }
+    .logo { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+    .logo-icon { width: 48px; height: 48px; background: #0e7490; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #06b6d4; }
+    .logo-text { font-size: 28px; font-weight: 700; color: #0f172a; letter-spacing: 2px; }
+    .subtitle { color: #64748b; font-size: 14px; }
+    .meta-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin: 24px 0; }
+    .meta-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; }
+    .meta-label { font-size: 11px; text-transform: uppercase; color: #64748b; letter-spacing: 0.5px; margin-bottom: 4px; }
+    .meta-value { font-size: 16px; font-weight: 600; color: #1e293b; }
+    .verdict { display: inline-block; padding: 8px 20px; border-radius: 9999px; font-weight: 700; font-size: 14px; color: white; }
+    .section { margin: 30px 0; }
+    .section-title { font-size: 18px; font-weight: 700; color: #0f172a; border-bottom: 2px solid #e2e8f0; padding-bottom: 8px; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .evidence-table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 12px; }
+    .evidence-table th, .evidence-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #e2e8f0; }
+    .evidence-table th { background: #f1f5f9; font-weight: 600; color: #475569; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 4px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
+    .badge-green { background: #dcfce7; color: #166534; }
+    .badge-amber { background: #fef3c7; color: #92400e; }
+    .badge-red { background: #fee2e2; color: #991b1b; }
+    .badge-blue { background: #dbeafe; color: #1e40af; }
+    .badge-gray { background: #f1f5f9; color: #475569; }
+    .history-item { display: flex; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid #e2e8f0; font-size: 13px; }
+    .history-date { color: #64748b; font-size: 12px; }
+    .history-status { font-weight: 600; }
+    .radar-note { font-size: 11px; color: #64748b; margin-top: 8px; }
+    .footer { margin-top: 50px; padding-top: 20px; border-top: 1px solid #e2e8f0; text-align: center; color: #94a3b8; font-size: 11px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="logo">
+      <div class="logo-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></div>
+      <div class="logo-text">AEGISTEL</div>
+    </div>
+    <div class="subtitle">MENA Payment-Fraud & Account-Takeover Guard — Nokia NaC CAMARA Swarm</div>
+  </div>
+
+  <div class="meta-grid">
+    <div class="meta-card">
+      <div class="meta-label">MSISDN</div>
+      <div class="meta-value">${result.msisdn}</div>
+    </div>
+    <div class="meta-card">
+      <div class="meta-label">Transaction Type</div>
+      <div class="meta-value">${result.transaction_type}</div>
+    </div>
+    <div class="meta-card">
+      <div class="meta-label">Amount</div>
+      <div class="meta-value">$${result.amount.toLocaleString()}</div>
+    </div>
+    <div class="meta-card">
+      <div class="meta-label">Report Generated</div>
+      <div class="meta-value">${date} UTC</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Verdict</div>
+    <div style="display: flex; gap: 16px; flex-wrap: wrap; align-items: center; margin-top: 12px;">
+      <span class="verdict" style="background: ${statusColor};">${result.status}</span>
+      <span class="verdict" style="background: ${riskColor};">${result.risk_score}</span>
+      ${result.qod_recommended ? '<span class="badge badge-amber">QoD Recommended</span>' : ''}
+    </div>
+    <div style="margin-top: 16px; color: #475569;">${result.reasoning}</div>
+    <div style="margin-top: 8px; color: #475569;"><strong>Recommended Action:</strong> ${result.recommended_action}</div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Carrier Telemetry & Risk Verdict</div>
+    <table class="evidence-table">
+      <thead>
+        <tr><th>Signal</th><th>Status</th><th>Detail</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>SIM Swap</td>
+          <td>${result.telemetry.sim_swap_detected ? '<span class="badge badge-red">DETECTED</span>' : '<span class="badge badge-green">CLEAR</span>'}</td>
+          <td>${result.telemetry.last_sim_swap_date ? new Date(result.telemetry.last_sim_swap_date).toLocaleString() : 'No swap detected'}</td>
+        </tr>
+        <tr>
+          <td>Location / Geofence</td>
+          <td>${result.telemetry.geofence_status === 'VERIFIED' ? '<span class="badge badge-green">VERIFIED</span>' : result.telemetry.geofence_status === 'PARTIAL' ? '<span class="badge badge-amber">PARTIAL</span>' : '<span class="badge badge-red">OUTSIDE</span>'}</td>
+          <td>Accuracy: ${result.telemetry.location_accuracy_meters}m</td>
+        </tr>
+        <tr>
+          <td>Roaming</td>
+          <td>${result.telemetry.roaming_status === 'DOMESTIC' ? '<span class="badge badge-green">DOMESTIC</span>' : '<span class="badge badge-amber">ROAMING</span>'}</td>
+          <td>${result.telemetry.roaming_country ? `(${result.telemetry.roaming_country})` : ''}</td>
+        </tr>
+        <tr>
+          <td>Reachability</td>
+          <td>${result.telemetry.reachability_status}</td>
+          <td></td>
+        </tr>
+        <tr>
+          <td>Number Verification</td>
+          <td><span class="badge ${result.telemetry.number_verification_status === 'VERIFIED' ? 'badge-green' : result.telemetry.number_verification_status === 'FAILED' ? 'badge-red' : 'badge-gray'}">${result.telemetry.number_verification_status || 'UNKNOWN'}</span></td>
+          <td></td>
+        </tr>
+        <tr>
+          <td>Device Swap</td>
+          <td>${result.telemetry.device_swap_detected === true ? '<span class="badge badge-red">SWAPPED</span>' : result.telemetry.device_swap_detected === false ? '<span class="badge badge-green">CLEAN</span>' : '<span class="badge badge-gray">UNKNOWN</span>'}</td>
+          <td></td>
+        </tr>
+        <tr>
+          <td>Number Recycling</td>
+          <td>${result.telemetry.number_recycled === true ? '<span class="badge badge-red">RECYCLED</span>' : result.telemetry.number_recycled === false ? '<span class="badge badge-green">NOT RECYCLED</span>' : '<span class="badge badge-gray">UNKNOWN</span>'}</td>
+          <td></td>
+        </tr>
+        <tr>
+          <td>Cell Congestion</td>
+          <td><span class="badge ${(result.telemetry.max_congestion_level || 'low').toLowerCase() === 'high' ? 'badge-red' : (result.telemetry.max_congestion_level || 'low').toLowerCase() === 'medium' ? 'badge-amber' : 'badge-green'}">${(result.telemetry.max_congestion_level || 'LOW').toUpperCase()}</span></td>
+          <td></td>
+        </tr>
+        <tr>
+          <td>QoD Step-Up</td>
+          <td>${result.telemetry.qod_status ? '<span class="badge badge-blue">ACTIVE</span>' : result.qod_recommended ? '<span class="badge badge-amber">RECOMMENDED</span>' : '<span class="badge badge-gray">INACTIVE</span>'}</td>
+          <td>${result.telemetry.qod_profile ? `Profile: ${result.telemetry.qod_profile}` : ''}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Evidence Explorer</div>
+    <table class="evidence-table">
+      <thead>
+        <tr><th>Tool</th><th>Status</th><th>Source</th><th>Duration</th></tr>
+      </thead>
+      <tbody>
+        ${tools.map((tool: ToolResult) => `
+          <tr>
+            <td>${tool.name.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase())}</td>
+            <td>${tool.success ? '<span class="badge badge-green">OK</span>' : '<span class="badge badge-red">FAILED</span>'}</td>
+            <td>${tool.source || 'unknown'}</td>
+            <td>${tool.duration_ms != null ? tool.duration_ms + 'ms' : 'N/A'}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+    <div class="radar-note">Evidence provenance: NaC SDK (live SDK calls) / CAMARA REST (REST fallback) / SANDBOX (local fallback)</div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Per-Audit Signal Radar</div>
+    <div class="radar-note">Each axis represents a CAMARA signal. Value 1 = flagged (risk detected), 0 = clear. Radar shows risk profile across all signals.</div>
+    <ul style="margin-top: 12px; padding-left: 20px; font-size: 12px; line-height: 1.8;">
+      <li><strong>SIM Swap:</strong> ${result.telemetry.sim_swap_detected ? 'Flagged' : 'Clear'}</li>
+      <li><strong>Location:</strong> ${result.telemetry.geofence_status}</li>
+      <li><strong>Roaming:</strong> ${result.telemetry.roaming_status}</li>
+      <li><strong>Reachability:</strong> ${result.telemetry.reachability_status}</li>
+      <li><strong>Number Verification:</strong> ${result.telemetry.number_verification_status || 'UNKNOWN'}</li>
+      <li><strong>Congestion:</strong> ${result.telemetry.max_congestion_level || 'LOW'}</li>
+      <li><strong>Device Swap:</strong> ${result.telemetry.device_swap_detected === true ? 'Flagged' : result.telemetry.device_swap_detected === false ? 'Clear' : 'Unknown'}</li>
+      <li><strong>Number Recycling:</strong> ${result.telemetry.number_recycled === true ? 'Flagged' : result.telemetry.number_recycled === false ? 'Clear' : 'Unknown'}</li>
+      <li><strong>QoD:</strong> ${result.telemetry.qod_status || (result.qod_recommended ? 'Recommended' : 'None')}</li>
+    </ul>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Audit History</div>
+    ${history && history.incidents.length > 0 ? `
+      ${history.incidents.map((inc: HistoryIncident) => `
+        <div class="history-item">
+          <div>
+            <div class="history-date">${inc.timestamp ? new Date(inc.timestamp).toLocaleString('en-GB', { timeZone: 'UTC' }) + ' UTC' : 'Unknown time'}</div>
+            <div class="history-status" style="color: ${statusColors[inc.status ?? 'UNKNOWN'] || '#64748b'};">${inc.status ?? 'UNKNOWN'} · ${inc.risk_score ?? 'UNKNOWN'} · $${inc.amount?.toLocaleString() ?? '0'}</div>
+          </div>
+        </div>
+      `).join('')}
+    ` : '<div style="color: #94a3b8; font-style: italic;">No history available (run audit with operator key to unlock).</div>'}
+  </div>
+
+  <div class="footer">
+    Generated by AegisTel — Nokia NaC CAMARA Swarm Fraud Detection<br>
+    Report ID: ${result.audit_id} · ${date} UTC
+  </div>
+</body>
+</html>`;
+  };
+
+  const generatePDFContent = (result: AuditResponse, hist: HistoryResponse | null): string => {
+    return generateHTMLReport(result, hist);
+  };
+
+  // ===== END EXPORT FUNCTIONS =====
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-mono selection:bg-cyan-500 selection:text-slate-950 overflow-x-clip">
       <div ref={navWrapRef} className="fixed top-0 inset-x-0 z-50">
@@ -1019,6 +1322,29 @@ export default function AegisTelDashboard() {
                 </>
               )}
             </button>
+
+            {auditResult && (
+              <div className="flex flex-wrap gap-2 mt-3">
+                <button
+                  onClick={exportToHTML}
+                  disabled={loading}
+                  className="flex items-center gap-2 px-3 py-2 text-xs font-bold text-slate-100 bg-slate-800 border border-slate-700 rounded-lg hover:bg-slate-700 disabled:opacity-50 transition-colors"
+                  title="Export audit report as HTML"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Export HTML</span>
+                </button>
+                <button
+                  onClick={exportToPDF}
+                  disabled={loading}
+                  className="flex items-center gap-2 px-3 py-2 text-xs font-bold text-slate-100 bg-amber-900 border border-amber-800 rounded-lg hover:bg-amber-800 disabled:opacity-50 transition-colors"
+                  title="Export audit report as PDF (A4, Times New Roman)"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Export PDF</span>
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="mt-4 grid grid-cols-1 gap-3">
