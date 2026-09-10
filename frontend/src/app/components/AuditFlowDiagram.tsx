@@ -46,7 +46,6 @@ const ICON_MAP: Record<string, ToolIconComponent> = {
   create_qod_session: Zap,
   check_device_swap: RotateCcw,
   check_number_recycling: Activity,
-  check_kyc_match: ShieldCheck,
 };
 
 function getToolIcon(name: string): React.ReactNode {
@@ -65,7 +64,6 @@ function getToolLabel(name: string): string {
     case "create_qod_session": return "QoD SLICE";
     case "check_device_swap": return "DEV SWAP";
     case "check_number_recycling": return "NUM RECYCLE";
-    case "check_kyc_match": return "KYC MATCH";
     default: return name.toUpperCase();
   }
 }
@@ -81,7 +79,6 @@ function getToolShort(name: string): string {
     case "create_qod_session": return "QoD";
     case "check_device_swap": return "DSW";
     case "check_number_recycling": return "NRC";
-    case "check_kyc_match": return "KYM";
     default: return name.slice(0, 3).toUpperCase();
   }
 }

@@ -18,7 +18,6 @@ Task = None
 from app.agents.tools import (
     check_device_reachability,
     check_device_swap,
-    check_kyc_match,
     check_number_recycling,
     check_roaming_status,
     check_sim_swap,
@@ -112,7 +111,6 @@ SIGNAL_TOOL_NAMES: Dict[str, str] = {
     "roaming": "check_roaming_status",
     "reachability": "check_device_reachability",
     "congestion": "get_congestion_insights",
-    "kyc_match": "check_kyc_match",
 }
 TOOL_SIGNAL_KEY: Dict[str, str] = {v: k for k, v in SIGNAL_TOOL_NAMES.items()}
 
@@ -1303,8 +1301,6 @@ def run_specialist_crew(
             return (name, lambda: _run_tool_payload("get_congestion_insights", get_congestion_insights, msisdn=msisdn))
         if name == "check_number_recycling":
             return (name, lambda: _run_tool_payload("check_number_recycling", check_number_recycling, msisdn=msisdn))
-        if name == "check_kyc_match":
-            return (name, lambda: _run_tool_payload("check_kyc_match", check_kyc_match, msisdn=msisdn))
         raise ValueError(f"Unknown planned tool {name}")
 
     def _run_tools(jobs: List[tuple[str, Any]]) -> List[Dict[str, Any]]:

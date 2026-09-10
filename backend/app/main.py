@@ -209,7 +209,6 @@ def _count_active_tools() -> int:
         tool_names = [
             "check_device_reachability",
             "check_device_swap",
-            "check_kyc_match",
             "check_number_recycling",
             "check_roaming_status",
             "check_sim_swap",
