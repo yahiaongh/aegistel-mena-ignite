@@ -57,11 +57,11 @@ function getToolIcon(name: string): React.ReactNode {
 function getToolLabel(name: string): string {
   switch (name) {
     case "check_sim_swap": return "SIM SWAP";
-    case "verify_location": return "GEOFENCE";
+    case "verify_location": return "GEOFN";
     case "check_roaming_status": return "ROAMING";
-    case "check_device_reachability": return "REACHABILITY";
+    case "check_device_reachability": return "DEV REACH";
     case "verify_number": return "NUMBER VRFY";
-    case "get_congestion_insights": return "CONGESTION";
+    case "get_congestion_insights": return "CONGES";
     case "create_qod_session": return "QoD SLICE";
     case "check_device_swap": return "DEV SWAP";
     case "check_number_recycling": return "NUM RECYCLE";

@@ -169,6 +169,7 @@ const INITIAL_FLOW_TOOLS: FlowTool[] = [
   { name: "check_roaming_status", state: "pending" },
   { name: "check_device_swap", state: "pending" },
   { name: "check_number_recycling", state: "pending" },
+  { name: "check_kyc_match", state: "pending" },
   { name: "get_congestion_insights", state: "pending" },
   { name: "create_qod_session", state: "pending" },
 ];

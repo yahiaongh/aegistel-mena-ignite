@@ -301,7 +301,7 @@ async def execute_audit(request: AuditRequest, progress_callback: Any | None = N
         evidence_summary[bucket] += 1
     telemetry = NokiaApiTelemetry(
         device_swap_detected=next(
-            (item.get("deviceSwapped") for item in tool_results if item.get("deviceSwapped") is not None),
+            (item.get("deviceSwapped") or item.get("swapped") for item in tool_results if item.get("deviceSwapped") is not None or item.get("swapped") is not None),
             None,
         ),
         number_recycled=next(
