@@ -246,7 +246,8 @@ async def execute_audit(request: AuditRequest, progress_callback: Any | None = N
     # session (that would borrow a chargeable network resource before any
     # consent). We surface the recommendation to the UI; provisioning happens
     # through the explicit, authenticated, policy-gated confirm endpoint.
-    qod_recommended = bool(specialist_output.get("qod_recommended")) or assessment.status == "STEP_UP_REQUIRED"
+    # Recommend QoD for high-risk verdicts that warrant step-up verification.
+    qod_recommended = bool(specialist_output.get("qod_recommended")) or assessment.status in {"STEP_UP_REQUIRED", "BLOCKED"}
     if progress_callback is not None:
         try:
             progress_callback(
