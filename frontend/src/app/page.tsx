@@ -207,6 +207,8 @@ export default function AegisTelDashboard() {
   const [qodProvisioned, setQodProvisioned] = useState<{ sessionId?: string; qosStatus?: string; source?: string } | null>(null);
   const [qodProvisioning, setQodProvisioning] = useState(false);
   const [qodProvisionError, setQodProvisionError] = useState<string | null>(null);
+  const [showQodKeyModal, setShowQodKeyModal] = useState(false);
+  const [qodKeyInput, setQodKeyInput] = useState("");
 
   const [loading, setLoading] = useState(false);
   const [auditResult, setAuditResult] = useState<AuditResponse | null>(null);
@@ -450,9 +452,8 @@ export default function AegisTelDashboard() {
     if (!auditResult) return;
     const token = opsToken.trim();
     if (!token) {
-      setQodProvisionError(
-        "An operator or tenant API key is required to confirm QoD provisioning.",
-      );
+      // No operator key stored — show modal to enter it
+      setShowQodKeyModal(true);
       return;
     }
     setQodProvisioning(true);
@@ -483,6 +484,21 @@ export default function AegisTelDashboard() {
     } finally {
       setQodProvisioning(false);
     }
+  };
+
+  const handleQodKeySubmit = async () => {
+    const token = qodKeyInput.trim();
+    if (!token) {
+      setQodProvisionError("Please enter an operator or tenant API key.");
+      return;
+    }
+    // Store the key for future use
+    setOpsToken(token);
+    sessionStorage.setItem("aegistel_ops_token", token);
+    setShowQodKeyModal(false);
+    setQodKeyInput("");
+    // Now retry provisioning with the new token
+    await provisionQoD();
   };
 
   const handleFlowProgress = (payload: Record<string, unknown>) => {
@@ -1763,7 +1779,14 @@ export default function AegisTelDashboard() {
                       <div className="space-y-1.5">
                         <div className="text-xs font-bold text-amber-300">RECOMMENDED</div>
                         <button
-                          onClick={() => void provisionQoD()}
+                          onClick={() => {
+                            const token = opsToken.trim();
+                            if (!token) {
+                              setShowQodKeyModal(true);
+                            } else {
+                              void provisionQoD();
+                            }
+                          }}
                           disabled={qodProvisioning}
                           className="w-full bg-indigo-500/20 hover:bg-indigo-500/40 disabled:opacity-50 border border-indigo-500/40 text-indigo-200 text-[10px] font-bold py-1.5 rounded transition cursor-pointer"
                         >
@@ -1773,6 +1796,38 @@ export default function AegisTelDashboard() {
                           <div className="text-[9px] text-rose-400 leading-tight">{qodProvisionError}</div>
                         ) : (
                           <div className="text-[9px] text-slate-500 leading-tight">Charges a Nokia QoD session; requires an authorized tenant or operator key</div>
+                        )}
+                        {showQodKeyModal && (
+                          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+                            <div className="bg-slate-900 border border-slate-700 rounded-lg p-4 w-full max-w-sm">
+                              <div className="text-xs font-bold text-slate-200 mb-3">Enter Operator/Tenant API Key</div>
+                              <input
+                                type="password"
+                                value={qodKeyInput}
+                                onChange={(e) => setQodKeyInput(e.target.value)}
+                                onKeyDown={(e) => e.key === "Enter" && void handleQodKeySubmit()}
+                                className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-[11px] text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                placeholder="Enter AEGISTEL_ADMIN_KEY or tenant key"
+                                autoFocus
+                              />
+                              {qodProvisionError && <div className="text-[9px] text-rose-400 mt-2">{qodProvisionError}</div>}
+                              <div className="flex gap-2 mt-3">
+                                <button
+                                  onClick={() => { setShowQodKeyModal(false); setQodKeyInput(""); setQodProvisionError(null); }}
+                                  className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-200 text-[10px] font-bold py-2 rounded"
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  onClick={handleQodKeySubmit}
+                                  disabled={qodProvisioning || !qodKeyInput.trim()}
+                                  className="flex-1 bg-indigo-500/20 hover:bg-indigo-500/40 disabled:opacity-50 border border-indigo-500/40 text-indigo-200 text-[10px] font-bold py-2 rounded"
+                                >
+                                  {qodProvisioning ? "PROVISIONING..." : "CONFIRM & PROVISION"}
+                                </button>
+                              </div>
+                            </div>
+                          </div>
                         )}
                       </div>
 ) : (

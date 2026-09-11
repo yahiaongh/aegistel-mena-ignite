@@ -39,8 +39,8 @@ class Settings(BaseSettings):
     # Bank policy flag: provisioning a QoD session borrows a chargeable shared
     # network resource, so the audit decision NEVER provisions one. A session is
     # only created through POST /api/v1/audit/qod/provision (explicit confirmed
-    # action) AND this flag. Default OFF = QoD is recommendation-only everywhere.
-    AEGISTEL_QOD_POLICY_ENABLED: bool = False
+    # action) AND this flag. Default ON = QoD provisioning enabled with policy.
+    AEGISTEL_QOD_POLICY_ENABLED: bool = True
     # QoD sessions are provisioned only for this server-side application
     # endpoint. Clients must never select the network destination.
     AEGISTEL_QOD_SERVICE_IP: str = "233.252.0.2"
