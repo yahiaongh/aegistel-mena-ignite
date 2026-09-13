@@ -38,11 +38,12 @@ def test_demo_msisdn_exposes_documented_risk_signals():
 
     assert result.telemetry.sim_swap_detected is True
     assert result.telemetry.location_verification_match is False
-    # QoD is recommendation-only: the decision NEVER provisions a session
-    # (chargeable resource), even for a risky transaction with request_qod_slice
-    # = true. The recommendation is surfaced instead.
+    # A confirmed device takeover moving high value is REJECTED outright — the
+    # fail-safe floor — so no QoD step-up session is recommended, and the
+    # decision still NEVER provisions a chargeable session automatically.
+    assert result.status == "REJECTED"
     assert result.telemetry.qod_session_active is False
-    assert result.qod_recommended is True
+    assert result.qod_recommended is False
 
 
 def test_fallback_reasoning_and_trace_are_contextual():
@@ -56,7 +57,7 @@ def test_fallback_reasoning_and_trace_are_contextual():
 
     result = asyncio.run(execute_audit(request))
 
-    assert "SIM swap" in result.reasoning or "location" in result.reasoning.lower()
+    assert "swap" in result.reasoning.lower() or "location" in result.reasoning.lower()
     assert all(step.thought != "Selected a CAMARA network capability based on the transaction context." for step in result.agent_trace)
     assert sum(1 for step in result.agent_trace if step.agent == "Autonomous_LLM_Orchestrator") <= 2
 

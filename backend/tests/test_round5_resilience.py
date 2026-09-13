@@ -48,31 +48,34 @@ def test_prompt_descriptions_stay_compact_for_large_memory_context():
     assert len(risk_description) // 4 < 5000
 
 
-def test_memory_engine_prefers_groq_llm_and_falls_back_to_gemini(monkeypatch):
+def test_memory_engine_builds_qdrant_store_only_when_enabled(monkeypatch):
+    """The durable Qdrant mirror is built only when explicitly opted in, and
+    never dials out otherwise (a freshly constructed store is inert until used).
+    """
     captured = {}
+
+    class FakeQdrantClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def collection_exists(self, name):
+            return True
+
+    monkeypatch.setattr("app.qdrant_store.QdrantClient", FakeQdrantClient)
+    monkeypatch.delenv("AEGISTEL_LIVE_MEMORY", raising=False)
+
+    engine = memory_agent.NetworkMemoryEngine()
+    assert engine.qdrant.enabled is False
+    engine.qdrant.upsert("p1", {"created_at": "2026-01-01T00:00:00Z", "user_id": "1", "text": "t", "metadata": {}})
+    assert captured == {}  # no client was built while disabled
+
     monkeypatch.setenv("AEGISTEL_LIVE_MEMORY", "1")
-
-    class FakeMemory:
-        @classmethod
-        def from_config(cls, config):
-            captured.update(config)
-            return cls()
-
-    monkeypatch.setattr(memory_agent, "Memory", FakeMemory)
-    monkeypatch.setattr(settings, "GROQ_API_KEY", "groq-test-key")
-
     engine = memory_agent.NetworkMemoryEngine()
-
-    assert engine.memory is not None
-    assert captured["llm"]["provider"] == "groq"
-    assert captured["llm"]["config"]["model"] == "openai/gpt-oss-20b"
-    assert captured["embedder"]["provider"] == "gemini"
-
-    monkeypatch.setattr(settings, "GROQ_API_KEY", "")
-    captured.clear()
-    engine = memory_agent.NetworkMemoryEngine()
-    assert captured["llm"]["provider"] == "gemini"
-    assert captured["llm"]["config"]["model"] == settings.GEMINI_MODEL
+    assert engine.qdrant.enabled is True
+    engine.qdrant.upsert("p1", {"created_at": "2026-01-01T00:00:00Z", "user_id": "1", "text": "t", "metadata": {}})
+    assert captured.get("url") == settings.QDRANT_URL
+    assert captured.get("api_key") == settings.QDRANT_API_KEY
+    assert captured.get("timeout") == 5
 
 
 def test_no_decommissioned_groq_models_anywhere():

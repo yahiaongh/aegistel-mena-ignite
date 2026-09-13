@@ -29,12 +29,12 @@ class Settings(BaseSettings):
     AEGISTEL_API_RATE_LIMIT_PER_MIN: int = 120
     AEGISTEL_DEFAULT_TENANT: str = "demo"
     # Comma-separated "tenant_id=api_key" pairs (e.g. "bank-a=k1,bank-b=k2").
-    # When a client authenticates with one of these keys, the tenant namespace is
-    # derived server-side from the credential and is used to scope memory writes
-    # and reads. Tenant names are NEVER taken from the audit JSON body.
+    # A client authenticating with one of these keys gets a server-derived
+    # tenant namespace from that credential, used to scope memory writes and
+    # reads. Tenant names never come from the audit JSON body.
     AEGISTEL_TENANT_API_KEYS: str = ""
-    # Anonymous callers (no tenant key) are scoped to AEGISTEL_DEFAULT_TENANT
-    # only. Set this to false in production to require a tenant key for every audit.
+    # Anonymous callers (no tenant key) land in AEGISTEL_DEFAULT_TENANT only.
+    # Set this to false in production to require a tenant key per audit.
     AEGISTEL_ALLOW_ANON_AUDIT: bool = True
     # Bank policy flag: provisioning a QoD session borrows a chargeable shared
     # network resource, so the audit decision NEVER provisions one. A session is

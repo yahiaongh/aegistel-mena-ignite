@@ -8,9 +8,9 @@ import warnings
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional
 
-# CrewAI pulls in a substantial auth/tracing dependency graph. Keep it lazy so
-# deterministic audits (the default test/demo fallback) do not pay that cold
-# import cost or initialize model-side machinery they will never use.
+# CrewAI drags in a hefty auth/tracing dependency graph. Keep it lazy so
+# deterministic audits (the default test/demo fallback) never pay that cold
+# import cost or spin up model machinery they will not use.
 Agent = None
 Crew = None
 Task = None
@@ -49,10 +49,10 @@ def _ensure_crewai() -> bool:
 
 litellm = None
 
-# Fast, reliable free-tier models are preferred first. Rate-limited providers
-# (e.g. an exhausted Gemini free-tier quota) are skipped via _PROVIDER_COOLDOWN
-# so a request never burns a ~26s retry or a ~6.6s native-provider import on a
-# model that is known to be unavailable.
+# Prefer fast, reliable free-tier models. Rate-limited providers (e.g. an
+# exhausted Gemini free-tier quota) are skipped via _PROVIDER_COOLDOWN so a
+# request never burns a ~26s retry or a ~6.6s native-provider import on a
+# model we already know is unavailable.
 #
 # Groq deprecated llama-3.3-70b-versatile and llama-3.1-8b-instant on
 # 2026-08-16; the chain now uses the recommended GPT-OSS family plus
@@ -83,8 +83,8 @@ MODEL_CHAIN = {
     ],
 }
 
-# In-process record of models that recently hit a rate-limit/quota error, and
-# the earliest wall-clock timestamp at which retrying them makes sense.
+# Keep an in-process record of models that just hit a rate-limit/quota error,
+# along with the earliest wall-clock time at which retrying them makes sense.
 _PROVIDER_COOLDOWN: Dict[str, float] = {}
 _PROVIDER_COOLDOWN_WINDOW_S = 60.0
 
@@ -94,14 +94,24 @@ VALID_RISK_SCORES = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
 # Explicit transaction types which should be treated as higher-risk signals
 HIGH_RISK_TX_TYPES = {"CROSS_BORDER_SWIFT", "SAME_DAY_WIRE", "GIFT_CARD_TOPUP"}
 
+# ── Deterministic escalation floor ────────────────────────────────────────────
+# Two hard tripwires below the LLM (the grounded engine's auto-approval
+# ceiling). A clean transfer at/above QOD_TRIPWIRE_AMOUNT gets step-up
+# verification, and a CONFIRMED SIM swap — a proven device takeover — is
+# rejected outright at any value: the fail-safe floor the LLM arbitration
+# layer can never downgrade. Amounts at/above HIGH_AMOUNT_THRESHOLD also
+# escalate a clean line one step further by policy.
+QOD_TRIPWIRE_AMOUNT = 25000.0
+HIGH_AMOUNT_THRESHOLD = 100000.0
+
 # ── Bounded signal planning ──────────────────────────────────────────────────
-# Base CAMARA calls are NOT hard-wired for every request. `plan_tool_calls`
-# decides, up front and deterministically, which signals are required for the
-# transaction type and risk context, what is deferred, and why. The required
-# set feeds the fail-safe gate in synthesis (a required signal that cannot be
-# gathered still locks the verdict to a non-approval), while deferred signals
-# are pulled in only when the risk scan or value justifies a deeper pass. The
-# pool is a fixed whitelist, so the planner is bounded and cannot invent tools.
+# Base CAMARA calls are not hard-wired for every request. `plan_tool_calls`
+# fixes, up front and deterministically, which signals each transaction type
+# and risk context requires, what gets deferred, and why. The required set
+# feeds the fail-safe gate in synthesis (a required signal we cannot gather
+# still locks the verdict to a non-approval), while deferred signals are pulled
+# in only when the risk scan or value justifies a deeper pass. The pool is a
+# fixed whitelist, so the planner stays bounded and cannot invent tools.
 SIGNAL_TOOL_NAMES: Dict[str, str] = {
     "sim": "check_sim_swap",
     "device_swap": "check_device_swap",
@@ -144,13 +154,13 @@ HIGH_TOUCH_TX_TYPES = {
 
 
 def plan_tool_calls(request_context: Dict[str, Any]) -> Dict[str, Any]:
-    """Decide which base CAMARA signals a transaction needs before any call is
-    made. Returns a deterministic, bounded plan:
+    """Pick the base CAMARA signals a transaction needs before anything is called.
 
+    Deterministic and bounded, returned as:
       required  - signals the verdict depends on (fail-safe gated)
-      deferred  - optional signals, pulled in only when risk/value justifies
-      rationale - human-readable explanation shown in the trace
-      low_touch - whether the transaction type is a convenience flow
+      deferred  - optional, pulled in only when risk or value justifies it
+      rationale - human-readable explanation surfaced in the trace
+      low_touch - whether this is a convenience flow
     """
     transaction_type = str(request_context.get("transaction_type", "")).upper()
     amount = float(request_context.get("amount", 0.0) or 0.0)
@@ -228,11 +238,11 @@ def _find_tool_result(tool_results: List[Dict[str, Any]], *keys: str) -> Dict[st
 
 
 def _signal_unavailable(result: Optional[Dict[str, Any]], required_keys: tuple[str, ...]) -> bool:
-    """A required carrier signal is unavailable when the tool produced no usable
-    payload (transport failure, exception, or HTTP error) or is absent from the
-    evidence set entirely. Absent or errored signals must never be treated as
-    clean evidence: the fail-safe gate escalates any request that cannot confirm
-    its required signals instead of approving it on missing data."""
+    """A required carrier signal is unavailable if the tool returned no usable
+    payload (transport failure, exception, or HTTP error) or it never reached
+    the evidence set. We never treat absent or errored signals as clean
+    evidence: the fail-safe gate escalates anything it cannot confirm rather
+    than approving on missing data."""
     if result is None:
         return True
     if result.get("error") is not None:
@@ -260,10 +270,10 @@ def synthesize_specialist_assessment(
     enforce_roaming_policy = bool(enforce_roaming_policy)
     transaction_type = str(request_context.get("transaction_type", "")).upper()
 
-    # Signals this plan depends on. Defaults to the full core set (failsafe),
-    # so direct/no-plan callers keep the historic conservative guardrail.
-    # Only *required* signals trip the fail-safe gate; deferred optional
-    # signals that were deliberately not gathered are not treated as gaps.
+    # Signals this plan depends on. Default to the full core set (failsafe) so
+    # direct/no-plan callers keep the historic conservative guardrail. Only
+    # *required* signals trip the fail-safe gate; deferred options we
+    # deliberately skipped are not treated as gaps.
     DEFAULT_REQUIRED_SIGNALS = ["sim", "number_verification", "location", "roaming", "reachability"]
     required_signal_keys = set(required_signals or DEFAULT_REQUIRED_SIGNALS)
 
@@ -308,9 +318,9 @@ def synthesize_specialist_assessment(
     congestion_high_risk = max_congestion_level == "high"
     congestion_medium = max_congestion_level == "medium"
     if location_unknown:
-        # A failed/absent verification (e.g. a CAMARA error row or an empty
-        # result) means the location could not be confirmed. Treat it as UNKNOWN
-        # so the transaction is never silently approved on missing data.
+        # A failed/absent verification (a CAMARA error row or an empty result)
+        # means we could not confirm the location. Keep it UNKNOWN so the
+        # transaction is never silently approved on missing data.
         verification_result = "UNKNOWN"
     else:
         verification_result = str(location_result.get("verificationResult", "TRUE")).upper()
@@ -344,7 +354,7 @@ def synthesize_specialist_assessment(
     else:
         reachability_status = str(reachability_result.get("reachabilityStatus", "UNKNOWN")).upper()
     unreachable_risk = reachability_status == "UNREACHABLE"
-    amount_risk = amount >= 100000
+    amount_risk = amount >= HIGH_AMOUNT_THRESHOLD
 
     tx_high_risk = transaction_type in HIGH_RISK_TX_TYPES
 
@@ -405,9 +415,9 @@ def synthesize_specialist_assessment(
         }
     )
 
-    # Transaction-type evaluator: certain transaction types are considered
-    # higher risk by policy. They provide deterministic corroborating
-    # context similar to roaming but are not as severe as a SIM swap.
+    # Certain transaction types count as higher risk by policy. They give us
+    # deterministic corroborating context like roaming does, but are not as
+    # severe as a SIM swap.
     trace_items.append(
         {
             "agent": "Risk Type Evaluator",
@@ -422,10 +432,10 @@ def synthesize_specialist_assessment(
         }
     )
 
-    # Memory context is weighted into the verdict: prior incident history for
-    # the subscriber corroborates the current transaction. A clean current
-    # signal with history still warrants step-up verification, and an already
-    # active risk signal is escalated one severity level when history exists.
+    # Prior incident history corroborates the current transaction and gets
+    # weighted into the verdict. Clean current signals with history still
+    # warrant step-up verification, and an already-active risk signal climbs
+    # one severity level when history exists.
     high_severity_history = any(
         str((entry.get("metadata") or {}).get("risk_score", "")).upper() in {"HIGH", "CRITICAL"}
         or str((entry.get("metadata") or {}).get("status", "")).upper()
@@ -433,9 +443,9 @@ def synthesize_specialist_assessment(
         for entry in (memory_context or [])
     )
 
-    # Number Verification is a silent ownership check: a FAILED or UNKNOWN
-    # result means the presented number could not be bound to the device, which
-    # is a direct account-takeover signal on the same footing as SIM swap.
+    # Number Verification is a silent ownership check: FAILED or UNKNOWN means
+    # we could not bind the presented number to the device, which is an
+    # account-takeover signal on the same footing as a SIM swap.
     trace_items.append(
         {
             "agent": "Identity Verification Specialist",
@@ -448,9 +458,9 @@ def synthesize_specialist_assessment(
         }
     )
 
-    # Congestion Insights is a contextual signal: sustained High congestion in
-    # the subscriber's serving cell corroborates crowd-gathering scenarios
-    # (smart cities / mega-events) but is not evidence of fraud on its own.
+    # Congestion Insights is contextual: sustained High congestion in the
+    # subscriber's serving cell supports crowd-gathering scenarios (smart
+    # cities / mega-events) but is not fraud evidence by itself.
     trace_items.append(
         {
             "agent": "Congestion Intelligence Specialist",
@@ -463,9 +473,9 @@ def synthesize_specialist_assessment(
         }
     )
 
-    # A roaming signal only contributes to risk when the plan requires it OR it
-    # was actually gathered (a deferred optional signal that was later pulled in
-    # and errored must be treated as evidence, not silently ignored).
+    # Roaming only counts toward risk when the plan requires it or it was
+    # actually gathered — a deferred signal we pulled in and then errored must
+    # be treated as evidence, not silently ignored.
     roaming_expected = "roaming" in required_signal_keys or roaming_result is not None
 
     risk_signal = (
@@ -497,8 +507,8 @@ def synthesize_specialist_assessment(
         risk_signal = True
 
     unavailable_signals: List[str] = []
-    # Only plan-required signals gate the verdict. A deferred optional signal
-    # that was deliberately not gathered is not a data gap and must not escalate.
+    # Only plan-required signals gate the verdict. A deferred option we skipped
+    # on purpose is not a data gap and must not escalate.
     if sim_unknown and "sim" in required_signal_keys:
         unavailable_signals.append("SIM swap status")
     if number_verification_unknown and "number_verification" in required_signal_keys:
@@ -524,6 +534,58 @@ def synthesize_specialist_assessment(
             if status == "MANUAL_REVIEW"
             else "Run step-up verification before settlement and re-run the audit to confirm the carrier signals recover."
         )
+    elif sim_swapped and amount >= QOD_TRIPWIRE_AMOUNT:
+        # Confirmed-compromise floor: a proven SIM swap on a material-value
+        # transfer is a device takeover, not a validation question. REJECTED is
+        # the fail-safe outcome the LLM arbitration layer can never downgrade.
+        # Sub-tripwire swaps fall through to the risk-signal branch below so
+        # the QoD-assist step-up decision stays reachable instead of dead-ending.
+        status = "REJECTED"
+        risk_score = "CRITICAL"
+        reasoning = (
+            f"Confirmed compromise: a subscriber whose handset was proved swapped is attempting a "
+            f"{amount:,.2f} USD transaction. Device takeover at this material value is rejected "
+            "immediately; no further verification can re-authorize this device-owned transfer."
+        )
+        recommended_action = "Reject the transaction, freeze the account, and reissue the subscriber's SIM/device."
+        trace_items.append(
+            {
+                "agent": "Risk Auditor",
+                "action": "CONFIRMED_COMPROMISE_FLOOR",
+                "thought": reasoning,
+                "status": status,
+                "detail": f"sim_swapped at amount >= {QOD_TRIPWIRE_AMOUNT:,.0f} USD: locked REJECTED, never LLM-downgradeable",
+            }
+        )
+    elif (
+        amount >= QOD_TRIPWIRE_AMOUNT
+        and not risk_signal
+        and not memory_hits
+        and amount < HIGH_AMOUNT_THRESHOLD
+    ):
+        # QoD-tripwire escalation: a clean mid-band transfer ($25k-$99k) stays
+        # under the hard amount threshold but is no longer an auto-approval.
+        # Hard floor: congestion corroboration must not let a tripwire-crossing
+        # line fall back to APPROVED (congestion only escalates already-active
+        # risk, so it stays out of this branch). No compromise indicator fired,
+        # so this is elevated, not rejected.
+        status = "STEP_UP_REQUIRED"
+        risk_score = "MEDIUM"
+        reasoning = (
+            f"Specialist synthesis found no compromise indicators, but the transaction amount of ${amount:,.2f} "
+            f"crossed the {QOD_TRIPWIRE_AMOUNT:,.0f} dollar QoD tripwire, warranting step-up verification "
+            "before settlement."
+        )
+        recommended_action = "Request additional verification before final approval given the elevated mid-band amount."
+        trace_items.append(
+            {
+                "agent": "Risk Auditor",
+                "action": "QOD_TRIPWIRE",
+                "thought": reasoning,
+                "status": status,
+                "detail": "amount >= 25000 USD on a clean line: escalated, not approved",
+            }
+        )
     elif amount_risk and not risk_signal and not memory_hits and not congestion_high_risk:
         status = "STEP_UP_REQUIRED"
         risk_score = "MEDIUM"
@@ -543,10 +605,10 @@ def synthesize_specialist_assessment(
         if memory_hits and (risk_signal or amount_risk) and risk_score != "CRITICAL":
             risk_score = "CRITICAL" if risk_score == "HIGH" else "HIGH"
         if congestion_high_risk and (risk_signal or amount_risk or memory_hits) and risk_score != "CRITICAL":
-            # Congestion is contextual corroboration, not fraud evidence: it
-            # never flips a clean verdict, but it escalates an already-active
-            # risk by one severity level (crowd-gathering scenarios in dense
-            # urban zones warrant extra scrutiny on top of other signals).
+            # Congestion corroborates rather than proves fraud: it never flips a clean
+            # verdict, but it bumps an already-active risk by one severity level
+            # (crowd-gathering in dense urban zones warrants extra scrutiny on
+            # top of other signals).
             risk_score = "CRITICAL" if risk_score == "HIGH" else "HIGH"
         parts = []
         if sim_swapped:
@@ -585,7 +647,7 @@ def synthesize_specialist_assessment(
             parts.append("A QoD-assisted step-up session was provisioned for the transaction.")
         if tx_high_risk:
             parts.append(f"The transaction type '{transaction_type}' is classified as high risk by policy.")
-        # Defensive: ensure reasoning is meaningful even if parts is empty
+        # Keep reasoning meaningful even when parts ends up empty
         if parts:
             reasoning = "Specialist synthesis identified: " + " ".join(parts)
         else:
@@ -617,6 +679,24 @@ def synthesize_specialist_assessment(
                 ),
                 "status": status,
                 "detail": "fail-safe: never APPROVED on absent/errored carrier signals",
+            }
+        )
+    if sim_swapped and amount < QOD_TRIPWIRE_AMOUNT and status == "STEP_UP_REQUIRED":
+        # Sub-tripwire swap floor: a proved swap under the rejection threshold is
+        # a step-up, not a rejection. Locked — the LLM may neither approve past
+        # the swap evidence nor over-reject a low-value transfer, so the
+        # QoD-assist decision stays available instead of dead-ending in REJECTED.
+        trace_items.append(
+            {
+                "agent": "Risk Auditor",
+                "action": "CONFIRMED_COMPROMISE_STEP_UP",
+                "thought": (
+                    f"A proved SIM swap is present on a sub-tripwire transfer (${amount:,.2f} < "
+                    f"{QOD_TRIPWIRE_AMOUNT:,.0f} USD). Rejection is reserved for material value, so "
+                    "this line is locked to a QoD-assisted step-up."
+                ),
+                "status": status,
+                "detail": f"sim_swapped at amount < {QOD_TRIPWIRE_AMOUNT:,.0f} USD: locked STEP_UP_REQUIRED, not LLM-downgradeable or escalateable",
             }
         )
     trace_items.append(
@@ -690,10 +770,10 @@ def _run_tool_payload(tool_name: str, tool_callable: Any, **kwargs: Any) -> Dict
             return parsed_result
     except Exception as exc:
         logger.debug("Tool %s failed: %s", tool_name, exc)
-    # A failed tool must never be presented as successful telemetry: the row is
-    # labelled LOCAL FALLBACK with a non-2xx status and an explicit error so the
-    # fail-safe gate in synthesis treats the signal as unavailable instead of
-    # clean. Clients (Evidence Explorer) also render this as a fallback.
+    # A failed tool must never look like successful telemetry: tag the row LOCAL
+    # FALLBACK with a non-2xx status and an explicit error so the fail-safe gate
+    # in synthesis reads the signal as unavailable instead of clean. Clients
+    # (Evidence Explorer) also render this as a fallback.
     return {"name": tool_name, "status_code": 503, "source": "LOCAL FALLBACK", "error": "tool execution failed"}
 
 
@@ -769,71 +849,49 @@ def _reconcile_crew_output(parsed_output: Dict[str, Any], deterministic_output: 
                 f"Field '{key}' contained an untrusted CrewAI value {model_value!r}; using deterministic grounding."
             )
 
-    # Enforce the non-downgrade floor: the CrewAI output may be stricter than
-    # deterministic grounding, but it must not be more lenient. If the
-    # deterministic status is not APPROVED, do not allow CrewAI to set status
-    # to APPROVED. Similarly, do not allow the risk_score to be lowered below
-    # the deterministic level. Record attempts to downgrade in mismatch_reasons.
+    # Hard fail-safe invariants only. The deterministic engine is the safety
+    # floor, not the arbiter — the LLM owns the verdict except where a rule
+    # protects a proven safety state:
+    #   - a confirmed compromise (REJECTED/BLOCKED) can never be downgraded;
+    #   - a fail-safe gate trip (identity/carrier evidence unobtainable) locks
+    #     the non-approval verdict and the risk floor;
+    #   - a sub-tripwire swap (CONFIRMED_COMPROMISE_STEP_UP) stays locked at
+    #     step-up: rejection is reserved for material value and the swap
+    #     evidence must not be waved through as a clean approval.
+    # Everything else — stepping a deterministic STEP_UP_REQUIRED up or down,
+    # clearing a risk-derived escalation, flagging a clean case — is the LLM's
+    # call and is left untouched.
     det_status = deterministic_output["assessment"].get("status")
     det_risk = deterministic_output["assessment"].get("risk_score")
-    severity = {"LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
-    if det_status and det_status != "APPROVED":
-        if final_assessment.get("status") == "APPROVED":
+    confirmed_compromise = det_status in {"REJECTED", "BLOCKED"}
+    fail_safe_locked = confirmed_compromise or any(
+        item.get("action") in {"FAIL_SAFE_GATE", "CONFIRMED_COMPROMISE_STEP_UP"}
+        for item in deterministic_output.get("trace", [])
+    )
+    if fail_safe_locked and det_status:
+        if final_assessment.get("status") != det_status:
             mismatch_reasons.append(
-                f"CrewAI attempted to downgrade deterministic status '{det_status}' to 'APPROVED'; preserving deterministic floor."
+                f"CrewAI attempted to diverge from the fail-safe verdict '{det_status}' to "
+                f"'{final_assessment.get('status')}'; preserving the fail-safe verdict."
             )
             final_assessment["status"] = det_status
             narrative_overridden = True
-    # Risk score floor
-    if det_risk and final_assessment.get("risk_score"):
-        det_val = severity.get(det_risk, 2)
-        model_val = severity.get(final_assessment.get("risk_score"), 2)
-        if model_val < det_val:
+        if det_risk and final_assessment.get("risk_score") and final_assessment.get("risk_score") != det_risk:
             mismatch_reasons.append(
-                f"CrewAI attempted to lower risk_score from '{det_risk}' to '{final_assessment.get('risk_score')}'. Preserving deterministic risk '{det_risk}'."
+                f"CrewAI positioned risk '{final_assessment.get('risk_score')}' outside the locked "
+                f"verdict band '{det_risk}'; preserving the fail-safe '{det_risk}'."
             )
             final_assessment["risk_score"] = det_risk
             narrative_overridden = True
 
-    # Enforce the no-escalation ceiling on clean cases: when the deterministic
-    # engine found no grounded risk signal (status APPROVED), the CrewAI output
-    # must not invent risk. The LLM may INTENSIFY confirmed risk (e.g. turn a
-    # deterministic STEP_UP_REQUIRED into REJECTED), but it must never escalate
-    # a clean case — otherwise the same transaction would return different
-    # verdicts depending on whether the LLM fallback path was active.
-    escalation_capped = False
-    if det_status == "APPROVED":
-        model_status = final_assessment.get("status")
-        if model_status != "APPROVED":
-            mismatch_reasons.append(
-                f"CrewAI attempted to escalate deterministic status 'APPROVED' to '{model_status}' with no grounded risk signal; preserving APPROVED."
-            )
-            final_assessment["status"] = "APPROVED"
-            escalation_capped = True
-            # Keep the final judgment text coherent with the forced APPROVED
-            # verdict instead of echoing a hallucinated escalation.
-            final_assessment["reasoning"] = deterministic_output["assessment"].get("reasoning")
-            final_assessment["recommended_action"] = deterministic_output["assessment"].get("recommended_action")
-        model_risk = final_assessment.get("risk_score")
-        if model_risk and model_risk != "LOW":
-            mismatch_reasons.append(
-                f"CrewAI attempted to raise risk_score from 'LOW' to '{model_risk}' on a clean case; preserving LOW."
-            )
-            final_assessment["risk_score"] = "LOW"
-
-    # Prose-level validation: if the model produced free-text reasoning that
-    # mentions a specific country while the structured `roaming_country` is
-    # absent, sanitize the prose and record the correction. We also sanitize
-    # invented status values such as "DOMESTIC_ROAMING" if the grounded field
-    # clearly differs.
-    # When the escalation ceiling forced an APPROVED verdict on a clean case,
-    # the deterministic reasoning was already substituted; skip prose
-    # re-processing of the model's hallucinated text.
-    # When the downgrade floor forced a status and/or risk_score override, the
-    # model's free-text verdict is untrusted: it must not contradict the
-    # enforced structured verdict (e.g. prose claiming APPROVED while the floor
-    # kept STEP_UP_REQUIRED). Substitute the deterministic narrative, which is
-    # coherent with the grounded verdict by construction.
+    # Prose-level validation: if free-text reasoning names a specific country
+    # while the structured `roaming_country` is absent, sanitize the prose and
+    # log the correction. Same for invented status values like "DOMESTIC_ROAMING"
+    # when the grounded field clearly differs.
+    # When a fail-safe invariant forced a status/risk override, the model's
+    # free-text verdict is untrusted and must not contradict the enforced
+    # structured one. Substitute the deterministic narrative, which is coherent
+    # with the grounded verdict by construction.
     if narrative_overridden:
         mismatch_reasons.append(
             "CrewAI narrative text contradicted the enforced structured verdict; "
@@ -843,7 +901,7 @@ def _reconcile_crew_output(parsed_output: Dict[str, Any], deterministic_output: 
         final_assessment["recommended_action"] = deterministic_output["assessment"].get("recommended_action")
 
     reasoning_raw = parsed_output.get("reasoning") or deterministic_output["assessment"].get("reasoning")
-    if escalation_capped or narrative_overridden:
+    if narrative_overridden:
         reasoning_raw = None
     if reasoning_raw:
         sanitized_reasoning, prose_issues = _check_prose_against_grounded_fields(reasoning_raw, final_assessment)
@@ -857,7 +915,7 @@ def _reconcile_crew_output(parsed_output: Dict[str, Any], deterministic_output: 
                 )
         final_assessment["reasoning"] = sanitized_reasoning
         mismatch_reasons.extend(prose_issues)
-    elif not escalation_capped and not narrative_overridden:
+    elif not narrative_overridden:
         final_assessment["reasoning"] = reasoning_raw
 
     return final_assessment, mismatch_reasons
@@ -915,10 +973,10 @@ def _model_in_cooldown(model: str) -> bool:
 
 # --- Provider reachability gate -------------------------------------------
 # A configured key is not enough: egress from the deployed host (e.g. Render)
-# can hang on a provider for the whole LLM budget, silently degrading every
+# can hang on a provider for the whole LLM budget, quietly degrading every
 # audit to deterministic. Probe reachability (cached) up front so a blocked
-# host falls straight through to the fast deterministic path instead of
-# burning ~75s on dead connections.
+# host drops into the fast deterministic path instead of burning ~75s on dead
+# connections.
 _PROBE_TTL_S = 120.0
 _PROBE_TIMEOUT_S = 6.0
 _PROBE_CACHE: Dict[str, float] = {}
@@ -978,10 +1036,10 @@ def _mark_model_cooldown(model: str, exc: Optional[Exception] = None) -> None:
 
 
 def _mark_failed_models(specialist_model: str, auditor_model: str, exc: Optional[Exception] = None) -> None:
-    """Cooldown only the models implicated by the failure so a healthy partner
-    in the pair is not poisoned and dragged out of the chain. Falls back to
-    provider-level matching (e.g. OpenRouter credit errors), then to the whole
-    pair when the error carries no identifying signal."""
+    """Put only the failing models in cooldown so a healthy partner in the
+    pair stays in the chain. Falls back to provider-level matching (e.g.
+    OpenRouter credit errors), then to the whole pair when the error names
+    nothing."""
     text = str(exc or "")
     models = [specialist_model, auditor_model]
     matched = [model for model in models if model.split("/")[-1] in text]
@@ -994,9 +1052,9 @@ def _mark_failed_models(specialist_model: str, auditor_model: str, exc: Optional
 
 
 def _cooldown_window_from_error(exc: Optional[Exception]) -> float:
-    """Honor the provider's own retry hint; daily-quota errors (TPD / free-tier
-    per-model request caps) reset on the provider's schedule, so park the model
-    until the next nightly reset instead of retrying within seconds."""
+    """Honor the provider's retry hint; daily-quota errors (TPD / free-tier
+    per-model request caps) reset on the provider's schedule, so park the
+    model until the next nightly reset instead of retrying seconds later."""
     if exc is None:
         return _PROVIDER_COOLDOWN_WINDOW_S
     text = str(exc).lower()
@@ -1044,11 +1102,11 @@ _PLANNER_ATTEMPT_BUDGET_S = 2.0
 
 
 def _apply_agent_tool_plan(request_context: Dict[str, Any], policy_plan: Dict[str, Any]) -> Dict[str, Any]:
-    """Let a CrewAI planner choose optional CAMARA calls inside a safe envelope.
+    """Let a CrewAI planner pick optional CAMARA calls within a safe envelope.
 
     Policy fixes the identity signals required to approve a transaction. The
     planner may only choose which explicitly deferred contextual signals to
-    gather early; it cannot remove required checks, add tools, or alter the
+    gather early; it cannot drop required checks, add tools, or change the
     fraud rules. Any planner failure visibly falls back to the policy plan.
     """
     plan = dict(policy_plan)
@@ -1211,8 +1269,8 @@ def _log_prompt_size(description: str, label: str) -> None:
         logger.warning("Large %s prompt detected: approx %s tokens", label, estimated_tokens)
 
 
-# Per-pair cap on a single crew LLM attempt. Keeps a hang/reachability problem on
-# one provider from eating the whole multi-pair budget: fail over to the next
+# Per-pair cap on a single crew LLM attempt, so a hang/reachability problem on
+# one provider cannot eat the whole multi-pair budget: fail over to the next
 # provider after ~25s instead of blocking the request for minutes.
 _LLM_ATTEMPT_BUDGET_S: float = 25.0
 
@@ -1224,16 +1282,16 @@ def run_specialist_crew(
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     llm_time_budget_s: float = 75.0,
 ) -> Dict[str, Any]:
-    """Run a real CrewAI specialist workflow and fall back to deterministic synthesis on errors.
+    """Run a real CrewAI specialist workflow, falling back to deterministic synthesis on errors.
 
-    When `progress_callback` is provided, it is invoked (from any thread) with
-    small JSON-serializable event dicts so a streaming transport can animate the
-    pipeline: tool executions, deterministic synthesis, and LLM layer activity.
+    With `progress_callback`, we emit small JSON-serializable event dicts (from
+    any thread) so a streaming transport can animate the pipeline: tool
+    executions, deterministic synthesis, and LLM layer activity.
 
-    `llm_time_budget_s` caps the wall-clock time spent on the LLM CrewAI chain
-    (model-pair retries burn minutes when providers are rate-limited). When the
-    budget expires the crew hard-falls back to the deterministic engine, so
-    callers (audit stream, drill) always complete inside their own deadlines.
+    `llm_time_budget_s` caps wall-clock time on the LLM CrewAI chain (model-pair
+    retries burn minutes when providers are rate-limited). When it expires the
+    crew hard-falls back to the deterministic engine, so callers (audit stream,
+    drill) always finish inside their own deadlines.
     """
     def _emit(event_type: str, **payload: Any) -> None:
         if progress_callback is None:
@@ -1263,11 +1321,10 @@ def run_specialist_crew(
 
     # Bounded planning: decide which base CAMARA signals this transaction needs
     # before calling anything. The plan is deterministic per transaction type,
-    # surfaced in the trace, and drives both which tools run now (required) and
-    # which are deferred to a risk-aware second pass (optional). The fail-safe
-    # gate in synthesis treats a missing *required* signal as an escalation, so
-    # a plan can never silently weaken the guardrails by skipping evidence it
-    # declared necessary.
+    # surfaced in the trace, and drives which tools run now (required) and which
+    # defer to a risk-aware second pass (optional). The fail-safe gate treats a
+    # missing *required* signal as an escalation, so a plan can never quietly
+    # weaken the guardrails by skipping evidence it declared necessary.
     plan = _apply_agent_tool_plan(request_context, plan_tool_calls(request_context))
     required_tools = list(plan["required"]) + list(plan["initial_optional"])
     deferred_tools = list(plan["deferred"])
@@ -1345,9 +1402,9 @@ def run_specialist_crew(
     _emit("tools:start", count=len(planned_jobs), planned=required_tools, deferred=deferred_tools)
     executed_tool_results = _run_tools(planned_jobs)
 
-    # Pre-compute the deterministic risk signal from the planned base telemetry
-    # so the QoD/expansion decisions react to actual risk (auto-provision on
-    # risk), not just to the amount threshold or an explicit caller flag.
+    # Compute the deterministic risk signal from the planned base telemetry up
+    # front, so QoD/expansion decisions react to actual risk, not just the
+    # amount threshold or an explicit caller flag.
     risk_scan = synthesize_specialist_assessment(
         request_context,
         executed_tool_results,
@@ -1363,10 +1420,10 @@ def run_specialist_crew(
         signal_count=len(risk_scan.get("trace", [])),
     )
 
-    # Bounded risk-context re-plan: deferred optional signals are pulled in
-    # exactly once when the first scan found risk, the transaction is high
-    # value, or the subscriber has incident history. This expansion can only ADD
-    # evidence, never remove a required guardrail, so it stays deterministic.
+    # Bounded risk-context re-plan: pull in deferred optional signals exactly
+    # once when the first scan found risk, the transaction is high value, or the
+    # subscriber has incident history. This expansion can only add evidence,
+    # never remove a required guardrail, so it stays deterministic.
     if deferred_tools and (risk_signal or amount >= 25000 or memory_context):
         _emit(
             "plan:expand",
@@ -1391,10 +1448,10 @@ def run_specialist_crew(
 
     _t_tools = time.monotonic()
 
-    # QoD is NEVER provisioned during the decision. Creating a QoD session
-    # borrows a chargeable shared network resource, so it is a post-decision,
-    # consensual action. The verdict may only RECOMMEND a QoD step-up here; the
-    # session itself is created by an explicit confirmed action
+    # We never provision QoD during the decision. A QoD session borrows a
+    # chargeable shared network resource, so it is a post-decision, consensual
+    # action. The verdict may only RECOMMEND a QoD step-up here; the session is
+    # created by an explicit confirmed action
     # (POST /api/v1/audit/qod/provision), which additionally requires an
     # authenticated client and the AEGISTEL_QOD_POLICY_ENABLED bank-policy flag.
     # The `request_qod_slice` caller flag is intent metadata only — it never
@@ -1408,8 +1465,8 @@ def run_specialist_crew(
         required_signals=plan_signal_keys,
         plan_detail=plan["rationale"],
     )
-    # Replace the generic deterministic planning trace with the actual planner
-    # outcome so the UI can distinguish a model decision from policy fallback.
+    # Swap the generic deterministic planning trace for the real planner outcome,
+    # so the UI can tell a model decision from a policy fallback.
     deterministic_output["trace"] = [
         {
             "agent": "CAMARA Orchestration Planner",
@@ -1429,8 +1486,8 @@ def run_specialist_crew(
 
     def _qod_recommended(assessment: Dict[str, Any]) -> bool:
         # QoD only closes a STEP_UP_REQUIRED verdict. REJECTED/BLOCKED means a
-        # threat is confirmed and MANUAL_REVIEW is human-only, so none of those
-        # get a QoD recommendation.
+        # confirmed threat and MANUAL_REVIEW is human-only, so none of those get
+        # a QoD recommendation.
         return assessment.get("status") == "STEP_UP_REQUIRED"
 
     def _timing(llm_ms: float) -> Dict[str, Any]:
@@ -1511,9 +1568,9 @@ def run_specialist_crew(
 
     fallback_model_pairs = _build_available_pairs()
     if not fallback_model_pairs:
-        # Every configured model is in cooldown (all rate-limited). Lift the
-        # cooldown so a provider can serve this request instead of failing
-        # straight to the deterministic fallback.
+        # Every configured model is in cooldown (all rate-limited). Lift it so a
+        # provider can serve this request instead of falling straight back to
+        # the deterministic path.
         _PROVIDER_COOLDOWN.clear()
         fallback_model_pairs = _build_available_pairs()
     if not fallback_model_pairs:
@@ -1624,16 +1681,15 @@ def run_specialist_crew(
             if remaining_total <= 0:
                 raise _LLMBudgetExceededError(f"LLM phase budget ({llm_time_budget_s}s) exhausted")
             # Per-attempt cap: a provider whose egress hangs for the whole budget
-            # would otherwise starve every other provider (each pair retry only
-            # starts after the previous one exhausted the total deadline). Cap each
-            # attempt so a dead/hung provider fails over to the next pair quickly.
+            # would starve every other provider (pair retries only start after
+            # the previous one exhausted the total deadline). Cap each attempt
+            # so a dead or hung provider fails over to the next pair quickly.
             remaining = min(remaining_total, _LLM_ATTEMPT_BUDGET_S)
-            # Run the crew in a worker so the budget can be enforced. On the
-            # success path this behaves exactly like the old `with` block. On a
-            # real timeout, shutdown(wait=False) lets us respond immediately
-            # instead of the `with`-block shutdown(wait=True) waiting until the
-            # hung LLM call happens to finish — which was silently defeating the
-            # whole budget mechanism.
+            # Run the crew in a worker thread so we can enforce the budget. On success
+            # this behaves like the old `with` block. On a real timeout,
+            # shutdown(wait=False) lets us respond immediately, instead of the
+            # `with`-block shutdown(wait=True) waiting for the hung LLM call to
+            # finish — which silently defeated the whole budget mechanism.
             pool = ThreadPoolExecutor(max_workers=1)
             try:
                 crew_future = pool.submit(crew.kickoff)
@@ -1720,8 +1776,8 @@ def run_specialist_crew(
             else:
                 _mark_failed_models(specialist_model, auditor_model)
                 logger.warning("CrewAI specialist workflow failed unexpectedly for %s/%s; trying next model pair: %s", specialist_model, auditor_model, exc)
-            # Every failure moves to the next model in the chain. A dead/missing
-            # model should be the least catastrophic outcome, not a request crash.
+            # Every failure advances to the next model in the chain. A dead or missing
+            # model should be the least catastrophic outcome, not a crash.
             return None
 
     cooldown_lifted = False

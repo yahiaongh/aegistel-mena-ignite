@@ -198,7 +198,7 @@ const normalizeE164 = (raw: string): string => {
 
 export default function AegisTelDashboard() {
   const [msisdn, setMsisdn] = useState("+99999991001");
-  const [amount, setAmount] = useState("120000");
+  const [amount, setAmount] = useState("1000");
   const [lat, setLat] = useState("24.7136");
   const [lng, setLng] = useState("46.6753");
   const [geofenceRadius, setGeofenceRadius] = useState("2000");
@@ -1523,7 +1523,7 @@ export default function AegisTelDashboard() {
                 <button
                   onClick={() => void runDrill()}
                   disabled={drillLoading}
-                  className={`px-2.5 py-1 rounded text-[10px] font-bold uppercase border transition-colors ${
+                  className={`hover:cursor-pointer px-2.5 py-1 rounded text-[10px] font-bold uppercase border transition-colors ${
                     drillLoading
                       ? "border-rose-900 text-rose-500 cursor-not-allowed"
                       : "border-rose-700 bg-rose-950 text-rose-300 hover:bg-rose-900"
@@ -1688,7 +1688,7 @@ export default function AegisTelDashboard() {
                     </span>
                     <div className="text-xs font-bold">
                       {auditResult.telemetry.sim_swap_detected ? (
-                        // format 2026-08-01T16:08:15.184759+00:00 to be human readable
+                        // turn the ISO timestamp (e.g. 2026-08-01T16:08:15.184759+00:00) into something human readable
                         <span className="text-rose-400">SIM SWAP DETECTED <br />{new Date(auditResult.telemetry.last_sim_swap_date!).toLocaleString() ?? 0}</span>
                       ) : (
                         <span className="text-emerald-400">CLEARED (No Swap)</span>

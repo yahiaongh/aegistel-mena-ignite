@@ -54,13 +54,13 @@ router = APIRouter(prefix="/api", tags=["AegisTel Core"])
 logger = logging.getLogger(__name__)
 _normalizer = TTSTextNormalizer()
 
-# In-process sliding-window rate limiter (per apparent client IP, per bucket).
-# This is a lightweight demo-grade guard, not a distributed WAF:
-# - Runs in-process; does not coordinate across instances.
-# - Keys on `request.client.host` → collapses all Render users behind the
-#   same proxy IP into one bucket.
-# Production deployments must rate-limit at the edge (Cloudflare/Render proxy
-# + authenticated per-tenant quota plans with proper X-Forwarded-For handling).
+# In-process sliding-window rate limiter, one bucket per apparent client IP.
+# Demo-grade guard, not a distributed WAF:
+# - Runs in-process, so it never coordinates across instances.
+# - Keys on `request.client.host` — every Render user behind the same proxy
+#   IP shares one bucket.
+# Production should rate-limit at the edge (Cloudflare/Render proxy plus
+# per-tenant quota plans that handle X-Forwarded-For properly).
 _RATE_WINDOWS: Dict[str, "collections.deque[float]"] = {}
 _RATE_LOCK = threading.Lock()
 
@@ -105,9 +105,9 @@ def _resolve_admin_token(request: Request) -> str:
 def _require_operator(request: Request) -> str:
     """FastAPI dependency for operator-only endpoints (history, memory wipe).
 
-    Requires AEGISTEL_ADMIN_KEY to be configured AND the caller to present a
-    matching token (Bearer, X-Admin-Token, or ?token=). Fails closed: 503 when
-    the key is unset, 401 on missing/mismatched credentials.
+    Needs AEGISTEL_ADMIN_KEY to be set and the caller to present the matching
+    token (Bearer, X-Admin-Token, or ?token=). Fails closed: 503 when the key
+    is unset, 401 on a missing or mismatched credential.
     """
     supplied = _resolve_admin_token(request)
     if not settings.AEGISTEL_ADMIN_KEY:
@@ -127,8 +127,8 @@ _TENANT_KEY_MAP_CACHE: Optional[Dict[str, str]] = None
 def _tenant_key_map() -> Dict[str, str]:
     """Parse AEGISTEL_TENANT_API_KEYS ("tenant_a=key1,tenant_b=key2") once.
 
-    Returns {tenant_id: api_key}. Malformed pairs are skipped loudly so a
-    typo in the env file never silently widens or narrows access.
+    Returns {tenant_id: api_key}. Malformed pairs are skipped with a warning,
+    so a typo in the env file never silently widens or narrows access.
     """
     global _TENANT_KEY_MAP_CACHE
     if _TENANT_KEY_MAP_CACHE is not None:
@@ -290,15 +290,14 @@ async def audit_transaction(
 
 @router.get("/diagnostics/provider_probe")
 async def provider_probe(operator: str = Depends(_require_operator)) -> Dict[str, Any]:
-    """Read-only connectivity probe to each configured LLM provider. Proves from
-    inside the host (e.g. Render) which providers are reachable and that the
-    configured key authenticates, so model-chain trouble can be told apart from
-    egress/network trouble with one call.
+    """Read-only connectivity probe to every configured LLM provider. Proves
+    from inside the host (e.g. Render) which providers are reachable and that
+    the configured keys authenticate, so model-chain trouble can be told apart
+    from plain egress/network trouble with one call.
 
-    Operator-only: this endpoint fires authenticated requests at every paid or
-    free-tier provider and reflects their status, so it is gated behind the same
-    admin dependency as history/memory-wipe and fails closed (503) when
-    AEGISTEL_ADMIN_KEY is not configured.
+    Operator-only: it fires authenticated requests at every paid or free-tier
+    provider, so it shares the admin dependency with history/memory-wipe and
+    fails closed (503) when AEGISTEL_ADMIN_KEY is not configured.
     """
     import requests as _requests
 
@@ -364,10 +363,12 @@ async def number_verification_diagnostics(operator: str = Depends(_require_opera
     endpoint is reachable via SDK and/or REST, and whether the API key has
     the required entitlement. Gated behind operator auth.
     """
-    from app.agents.tools import nac_client, NOKIA_API_KEY, NOKIA_BASE_URL
+    from app.agents.tools import _get_nac_client, NOKIA_API_KEY, NOKIA_BASE_URL
     import requests
     import time
-    
+
+    nac_client = _get_nac_client()
+
     results = {
         "nokia_api_key_configured": NOKIA_API_KEY != "sandbox-key",
         "sdk_initialized": nac_client is not None,
@@ -404,13 +405,14 @@ async def number_verification_diagnostics(operator: str = Depends(_require_opera
     
     # Test REST path
     url = f"{NOKIA_BASE_URL}/number-verification/number-verification/v2/verify"
+    from urllib.parse import urlsplit
     try:
         started = time.monotonic()
         response = requests.post(
-            url, json={"phoneNumber": "+99999991000"}, 
+            url, json={"phoneNumber": "+99999991000"},
             headers={
                 "Content-Type": "application/json",
-                "x-rapid-api-host": "network-as-code.nokia.rapidapi.com",
+                "x-rapid-api-host": urlsplit(NOKIA_BASE_URL).hostname,
                 "x-rapidapi-key": NOKIA_API_KEY,
             },
             timeout=10
@@ -453,9 +455,9 @@ async def audit_history(
     # default tenant's history (where demo/audit records are stored).
     tenant = settings.AEGISTEL_DEFAULT_TENANT
     incidents = memory_engine.list_all_incidents(msisdn, tenant_id=tenant)
-    # local store is append-ordered (oldest first): serve the most RECENT
-    # `limit` records so the operator's risk trend reflects current history,
-    # not the transaction's first days.
+    # Local store is append-ordered (oldest first), so take the most recent
+    # `limit` records — the operator wants the current risk trend, not the
+    # transaction's early days.
     recent = incidents[-limit:] if len(incidents) > limit else incidents
     items = []
     for item in recent:
@@ -463,6 +465,8 @@ async def audit_history(
         if isinstance(metadata, dict):
             items.append(
                 {
+                    "audit_id": metadata.get("audit_id"),
+                    "incident_id": metadata.get("incident_id"),
                     "timestamp": item.get("created_at") or item.get("timestamp") or item.get("updated_at"),
                     "status": metadata.get("status"),
                     "risk_score": metadata.get("risk_score"),
@@ -475,7 +479,7 @@ async def audit_history(
 
 @router.post("/memory/clear")
 async def clear_tenant_memory(tenant: str = Depends(_resolve_tenant)):
-    """Clear memory for the caller's tenant only. Scoped to the server-derived tenant."""
+    """Clears memory for the caller's tenant only — the server-derived one."""
     result = memory_engine.clear_tenant_memory(tenant)
     return {
         "status": "success",
@@ -486,15 +490,16 @@ async def clear_tenant_memory(tenant: str = Depends(_resolve_tenant)):
 
 @router.post("/memory/clear-all")
 async def clear_all_memory(operator: str = Depends(_require_operator)):
-    """Clears ALL tenants' memory. Superadmin-only: destructive administrative action."""
-    if memory_engine.memory:
-        try:
-            memory_engine.clear_all_memory()
-            return {"status": "success", "message": "All memory cleared (all tenants)"}
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Memory clear error: {exc}") from exc
-    memory_engine._local_store = []
-    return {"status": "success", "message": "All local memory cleared (all tenants)"}
+    """Clears ALL tenants' memory. Superadmin-only: destructive administrative action.
+
+    Clears both the local JSONL fallback store and the durable Qdrant audit
+    history mirror (when enabled).
+    """
+    try:
+        memory_engine.clear_all_memory()
+        return {"status": "success", "message": "All memory cleared (local JSONL + Qdrant mirror)"}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Memory clear error: {exc}") from exc
 
 
 @router.post("/feedback", status_code=201)
@@ -810,10 +815,10 @@ async def adversarial_drill_run(
     except HTTPException as exc:
         return _audit_error_response(exc, exc.status_code)
     except (TimeoutError, asyncio.TimeoutError) as exc:
-        # NOTE: on Python 3.11+ asyncio.TimeoutError subclasses OSError, so
-        # this must be caught BEFORE the (ConnectionError, OSError) handler —
-        # otherwise a drill that outlives its cap is mis-reported as a 502
-        # instead of an honest timeout.
+        # NOTE: asyncio.TimeoutError subclasses OSError on Python 3.11+, so it
+        # must be caught here, BEFORE the (ConnectionError, OSError) handler —
+        # otherwise an over-time drill is mis-reported as 502 instead of an
+        # honest timeout.
         logger.error("Adversarial drill timed out after %ss: %s", DRILL_TIMEOUT_SECONDS, exc)
         return _audit_error_response(exc, 504)
     except Exception as exc:

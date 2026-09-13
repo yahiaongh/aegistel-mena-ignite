@@ -1,15 +1,14 @@
 # backend/app/copilot_agent.py
 """AegisTel Copilot — grounded platform Q&A.
 
-The copilot is deliberately small and honest: a knowledge base curated from the
-demo's real capability set (audit, CAMARA tools, verdicts, drill, memory,
-feedback, voice, the operator-to-bank business model and the tech stack). A
-fast deterministic retriever picks the best-matching topic, and - when
-explicitly requested - a best-effort LLM pass rephrases the grounded answer in
-the same style as the rest of the swarm. LLM failures, rate limits and missing
-keys never break a chat: the deterministic answer is the contract, exactly like
-the audit path. Nothing here needs a vector store, so it stays deployable on
-the free tier with zero extra infrastructure.
+A knowledge base curated from the demo's real capability set (audit, CAMARA
+tools, verdicts, drill, memory, feedback, voice, the operator-to-bank business
+model and the tech stack). A fast deterministic retriever picks the best topic,
+and — when explicitly requested — a best-effort LLM pass rephrases the grounded
+answer in the same style as the rest of the swarm. LLM failures, rate limits
+and missing keys never break a chat: the deterministic answer always stands,
+exactly like the audit path. Nothing here needs a vector store, so it stays
+deployable on free tiers with zero extra infrastructure.
 """
 
 import difflib
@@ -144,7 +143,7 @@ _KNOWLEDGE_BASE: List[KB_TOPIC] = [
         "History and memory",
         ["does it remember", "memory", "history", "remember", "previous audits", "stored", "where is it stored"],
         ["memory", "history", "remember", "store", "persist", "qdrant"],
-        "Yes — every audit is written to a **memory engine** (mem0 + QDRANT, with Gemini embeddings). The History drawer replays prior incidents per MSISDN, so a returning number is seen in context instead of as a first-time stranger. The local store is also persisted on disk (`data/local_memory.jsonl`) with a full reset fellback under **Clear Memory** if you prefer a live demo to start clean.",
+        "Yes — every audit is written to the **memory engine**: a local JSONL store plus, when enabled (`AEGISTEL_LIVE_MEMORY=1`), a durable **Qdrant mirror** that survives restarts. The History drawer replays prior incidents per MSISDN, so a returning number is seen in context instead of as a first-time stranger. The local store is also persisted on disk (`data/local_memory.jsonl`) with a full reset fellback under **Clear Memory** if you prefer a live demo to start clean.",
         ["how_audit", "feedback", "stack"],
     ),
     _entry(
@@ -175,8 +174,8 @@ _KNOWLEDGE_BASE: List[KB_TOPIC] = [
         "stack",
         "Tech stack",
         ["tech stack", "what stack", "what models", "langgraph", "nextjs", "fastapi", "what is it built with", "technology", "what llms", "what language models", "which models do you use", "what is it written in"],
-        ["stack", "langgraph", "crewai", "litellm", "mem0", "qdrant", "fastapi", "next", "groq", "gemini", "camara", "llms", "model", "llm"],
-        "Built on a **LangGraph** state machine orchestrating a **CrewAI** specialist + auditor swarm, with **LiteLLM** routing that walks a model chain (Groq GPT-OSS 120B/20B & Qwen3.6-27B → OpenRouter GPT-4o-mini → Gemini flash-lite) behind a cooldown that skips drowned providers. Memory defaults to a **local JSONL store** (mem0/Qdrant opt-in via `AEGISTEL_LIVE_MEMORY=1`); the network layer talks to **Nokia NaC** through **7 CAMARA APIs**; the UI is **Next.js** + a **FastAPI** backend with a Deepgram-only voice layer. The whole demo runs on free tiers.",
+        ["stack", "langgraph", "crewai", "litellm", "qdrant", "fastapi", "next", "groq", "gemini", "camara", "llms", "model", "llm"],
+        "Built on a **LangGraph** state machine orchestrating a **CrewAI** specialist + auditor swarm, with **LiteLLM** routing that walks a model chain (Groq GPT-OSS 120B/20B & Qwen3.6-27B → OpenRouter GPT-4o-mini → Gemini flash-lite) behind a cooldown that skips drowned providers. Audit history and feedback are written to a **local JSONL store** plus a durable **Qdrant mirror** (`AEGISTEL_LIVE_MEMORY=1`) that survives restarts; the network layer talks to **Nokia NaC** through **7 CAMARA APIs**; the UI is **Next.js** + a **FastAPI** backend with a Deepgram-only voice layer. The whole demo runs on free tiers.",
         ["what_is", "multi_agent", "tools"],
     ),
     _entry(
@@ -256,8 +255,8 @@ _FUZZY_PHRASE_THRESHOLD = 0.62
 _FUZZY_TOKEN_THRESHOLD = 0.70
 _MSISDN_RE = re.compile(r"^\d{10,15}$")
 
-# Pure filler probes ("tell me more", "go on") carry no retrieval signal; let
-# the previous-topic hint (or the fallback menu) handle them instead of letting
+# Filler probes ("tell me more", "go on") carry no retrieval signal. Let the
+# previous-topic hint (or the fallback menu) handle them instead of letting
 # fuzzy matching guess at stray tokens like "more" ~ "overload".
 _VAGUE_TOKENS = {
     "tell", "me", "more", "go", "on", "and", "you", "about", "it", "what",

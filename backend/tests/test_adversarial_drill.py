@@ -16,6 +16,7 @@ sys.path.insert(0, ".")
 from app.agents.drill_agent import (  # noqa: E402
     _ARCHETYPES,
     _BLIND_SPOT_IDS,
+    _play,
     _sample_lineup,
     _validate_narration,
     THREAT_LEVELS,
@@ -112,7 +113,38 @@ def test_blind_spot_families_rotate_across_runs():
             assert blind["outcome"] in {"PARTIALLY_MISSED", "MISSED"}
             assert blind["note"]
             seen.add(blind["play_id"])
-    assert len(seen) >= 2, "different lineups must expose different blind spots"
+    # The engine was tightened (the mid-size-window and congestion windows now
+    # escalate), so the honest blind-spot pool is the sub-threshold first
+    # strike on a clean line. The drill must still surface at least one real,
+    # reproducible weakness — it is never a perfect score.
+    assert len(seen) >= 1, "the tightened engine must still expose a real blind spot"
+    assert all(play_id in _BLIND_SPOT_IDS for play_id in seen)
+
+
+def test_mid_band_and_confirmed_compromise_escalate():
+    """The two drill-scoring lifts are product hardening, not scoring edits:
+    (1) a clean $25k-$99k transfer is no longer auto-approved — it escalates
+    via the QoD tripwire; (2) a confirmed SIM swap moving $100k+ is REJECTED
+    outright (the fail-safe floor)."""
+    mid_band = _play(
+        "tripwire-check", "Clean Mid-Band Wire", "mid-size-window",
+        "clean mid-band", "+99999991001", 50000.0, "MEDIUM",
+        transaction_type="WIRE_TRANSFER",
+    )
+    mid_report = run_adversarial_drill(plays=[mid_band], use_llm=False)
+    assert mid_report["plays"][0]["verdict_status"] == "STEP_UP_REQUIRED"
+    assert mid_report["plays"][0]["defense_risk"] == "MEDIUM"
+    assert mid_report["plays"][0]["outcome"] == "ESCALATED"
+
+    high_swap = _play(
+        "compromise-check", "High-Value Post-Swap Wire", "otp-sim-swap",
+        "identity takeover", "+99999991000", 150000.0, "CRITICAL",
+        transaction_type="WIRE_TRANSFER",
+    )
+    swap_report = run_adversarial_drill(plays=[high_swap], use_llm=False)
+    assert swap_report["plays"][0]["verdict_status"] == "REJECTED"
+    assert swap_report["plays"][0]["outcome"] == "BLOCKED"
+    assert swap_report["plays"][0]["defense_risk"] == "CRITICAL"
 
 
 def test_outcome_mapping_math():

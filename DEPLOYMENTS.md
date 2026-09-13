@@ -22,10 +22,10 @@ pip install -r requirements.txt
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-> The backend loads keys from a `.env` file at the **repo root** (see
-> `config.py`). Create it from the template — `cp backend/.env.example .env` —
-> and fill in your real API keys. See `RUN_AND_TEST.md` → "Before you run —
-> create your own API keys" for the mandatory/optional key table.
+> The backend loads keys from a single `.env` file at the **repo root** (see
+> `config.py`). Copy `.env.example` to `.env` and fill in your own provider keys
+> (they are never committed). See `E2E_TEST.md` → "Prerequisites" for the
+> mandatory/optional key table.
 
 Frontend (see `frontend/`):
 
@@ -87,8 +87,8 @@ web service with `runtime: docker`, `dockerfilePath: ./Dockerfile.hf`,
 3. Render reads `render.yaml`, prompts for each `sync: false` env var — paste
    the values from your root `.env` (`GROQ_API_KEY`, `GOOGLE_API_KEY`,
    `NOKIA_NAC_API_KEY`, `DEEPGRAM_API_KEY`, and optionally `OPENROUTER_API_KEY`;
-   add `QDRANT_URL`/`QDRANT_API_KEY` only if enabling remote memory with
-   `AEGISTEL_LIVE_MEMORY=1`). For the feedback readback,
+   add `QDRANT_URL`/`QDRANT_API_KEY` and keep `AEGISTEL_LIVE_MEMORY=1` for the
+   durable audit-history/feedback mirror). For the feedback readback,
    `AEGISTEL_ADMIN_KEY` must be a strong random string (pick one; the Ops tab
    on the demo asks visitors for this passcode). Tenant namespaces are derived
    server-side: stub tenants/customers authenticate with per-tenant keys in
@@ -109,9 +109,10 @@ web service with `runtime: docker`, `dockerfilePath: ./Dockerfile.hf`,
 > bandwidth or instance hours, services are **suspended** (never billed) until
 > the next reset — no surprise charges. The filesystem is ephemeral: memory
 > **defaults to a local JSONL store on that disk** (durable only for the life of
-> the instance); enable `AEGISTEL_LIVE_MEMORY=1` with QDRANT keys for durable
-> audit-history/memory across restarts, which is the same persistence model as
-> the demo. The feedback store (`data/feedback.jsonl`) is also on that
+> the instance); set `AEGISTEL_LIVE_MEMORY=1` with QDRANT keys so audit history
+> and feedback are mirrored to the persistent Qdrant collections and survive
+> redeploys, which is the same persistence model as the live demo. The feedback
+> store (`data/feedback.jsonl`) is also on that
 > ephemeral disk — export it via the Ops tab before a rebuild; a durable store
 > is a clear follow-up if feedback volume grows.
 
@@ -186,7 +187,7 @@ Use the `render.yaml` `sync: false` pattern or dashboard secrets for anything se
 | Variable | Required | Notes |
 |---|---|---|
 | `GROQ_API_KEY` | optional | Primary specialist/auditor LLM provider |
-| `GOOGLE_API_KEY` | optional | Gemini LLM tier; also drives memory embeddings/extraction only when remote memory is enabled (`AEGISTEL_LIVE_MEMORY=1`) |
+| `GOOGLE_API_KEY` | optional | Gemini LLM tier |
 | `OPENROUTER_API_KEY` | optional | Fast reliable fallback, preferred before Gemini in `MODEL_CHAIN` |
 | `CEREBRAS_API_KEY` | optional | Additional provider |
 | `OPENAI_API_KEY` | optional | Additional provider |
@@ -194,7 +195,7 @@ Use the `render.yaml` `sync: false` pattern or dashboard secrets for anything se
 | `NOKIA_NAC_API_KEY` | optional (sandbox falls back) | Network-as-Code (RapidAPI) key for the Nokia NaC sandbox attempts |
 | `NOKIA_CAMARA_BASE_URL` | optional | Override NaC base URL |
 | `AEGISTEL_QOD_SERVICE_IP` | optional | Server-owned application endpoint for QoD sessions; clients cannot override it |
-| `QDRANT_URL` / `QDRANT_API_KEY` | optional (remote memory only) | Persistent vector backend for memory; used only when `AEGISTEL_LIVE_MEMORY=1` — memory otherwise defaults to the local JSONL store |
+| `QDRANT_URL` / `QDRANT_API_KEY` | optional (durable mirror) | Persistent store for audit history + feedback. When `AEGISTEL_LIVE_MEMORY=1` every incident/feedback record is mirrored to the `aegistel_audit_history` / `aegistel_feedback` Qdrant collections and reads merge local + Qdrant — surviving restarts and wiped disks |
 | `GEMINI_MODEL` | optional | Default `gemini-flash-latest` |
 | `GROQ_MODEL` | optional | Default `openai/gpt-oss-120b` (llama-3.3-70b/llama-3.1-8b decommissioned 2026-08-16) |
 | `FRONTEND_ORIGIN` | optional | CORS allowlist; defaults to `http://localhost:3000` — **set to your frontend URL in production** |
@@ -244,4 +245,4 @@ python -m pytest tests -q
 - **Slow audits / `used_fallback: true` / `x-tts-source` not `deepgram` on a deployed site:** almost always **stale environment keys** on the host. Render's env must match your local root `.env`. Validate from inside the host with `GET <url>/diagnostics/provider_probe` (operator-only: pass the `AEGISTEL_ADMIN_KEY` token) and check `GET <url>/api/health` -> `providers_configured`.
 - **Planned provider egress is blocked (all probes fail):** the audit fast-falls back to the deterministic engine (~4s) via the cached reachability gate, so the demo never hangs while waiting on a dead model connection.
 - **429 on audits:** The app already cooldowns rate-limited providers and falls back; if all providers are exhausted, the deterministic `synthesize_specialist_assessment` path returns a fallback assessment.
-- **Memory not persisting:** by design, memory **defaults to a local JSONL store**, and on the free Render filesystem that store is ephemeral (resets on redeploy). For durable memory across restarts, set `AEGISTEL_LIVE_MEMORY=1` with valid `QDRANT_URL`/`QDRANT_API_KEY` (and a `GOOGLE_API_KEY`) so mem0/Qdrant back the store.
+- **Memory not persisting:** memory defaults to a local JSONL store, and on the free Render filesystem that store is ephemeral (resets on redeploy). For durable audit history and feedback across restarts/redeploys, set `AEGISTEL_LIVE_MEMORY=1` with valid `QDRANT_URL`/`QDRANT_API_KEY` — every incident and feedback record is mirrored to the `aegistel_audit_history` / `aegistel_feedback` Qdrant collections and reads merge local + Qdrant.

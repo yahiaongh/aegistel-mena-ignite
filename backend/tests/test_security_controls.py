@@ -185,10 +185,10 @@ def test_audit_decision_never_provisions_qod():
         response = client.post(
             "/api/v1/audit",
             json={
-                "msisdn": "+99999991000",
+                "msisdn": "+99999991001",
                 "amount": 120000,
                 "transaction_type": "WIRE_TRANSFER",
-                "current_location": {"latitude": 24.0, "longitude": 46.0},
+                "current_location": {"latitude": 24.7136, "longitude": 46.6753},
                 "request_qod_slice": True,
                 "metadata": {"_force_deterministic": True},
             },
@@ -196,7 +196,8 @@ def test_audit_decision_never_provisions_qod():
 
     assert response.status_code == 200
     payload = response.json()
-    # The decision recommends a QoD step-up but never provisions the session.
+    # A clean high-amount audit escalates (step-up), so the decision
+    # recommends a QoD step-up but never provisions the session.
     assert payload["qod_recommended"] is True
     assert payload["telemetry"]["qod_session_active"] is False
     assert not any(
@@ -246,10 +247,10 @@ def test_qod_provision_succeeds_only_with_policy_and_credential(monkeypatch):
         audit = client.post(
             "/api/v1/audit",
             json={
-                "msisdn": "+99999991000",
+                "msisdn": "+99999991001",
                 "amount": 120000,
                 "transaction_type": "WIRE_TRANSFER",
-                "current_location": {"latitude": 24.0, "longitude": 46.0},
+                "current_location": {"latitude": 24.7136, "longitude": 46.6753},
                 "metadata": {"_force_deterministic": True},
             },
             headers={"Authorization": "Bearer kb"},
@@ -258,7 +259,7 @@ def test_qod_provision_succeeds_only_with_policy_and_credential(monkeypatch):
         audit_id = audit.json()["audit_id"]
         response = client.post(
             "/api/v1/audit/qod/provision",
-            json={"audit_id": audit_id, "msisdn": "+99999991000", "profile": "QOS_E", "duration_seconds": 3600},
+            json={"audit_id": audit_id, "msisdn": "+99999991001", "profile": "QOS_E", "duration_seconds": 3600},
             headers={"Authorization": "Bearer kb"},
         )
 
@@ -268,13 +269,13 @@ def test_qod_provision_succeeds_only_with_policy_and_credential(monkeypatch):
     assert payload["tenant"] == "bank-b"
     assert payload["session"].get("sessionId"), "provisioning must return a session id"
 
-    trail = main_module.memory_engine.list_all_incidents("+99999991000", tenant_id="bank-b")
+    trail = main_module.memory_engine.list_all_incidents("+99999991001", tenant_id="bank-b")
     assert any(r["metadata"].get("status") == "QOD_PROVISIONED" for r in trail)
     assert all(r["metadata"]["tenant_id"] == "bank-b" for r in trail)
     with TestClient(main_module.app) as client:
         replay = client.post(
             "/api/v1/audit/qod/provision",
-            json={"audit_id": audit_id, "msisdn": "+99999991000"},
+            json={"audit_id": audit_id, "msisdn": "+99999991001"},
             headers={"Authorization": "Bearer kb"},
         )
     assert replay.status_code == 409
@@ -296,24 +297,42 @@ def test_qod_provision_rejects_unrecommended_or_foreign_audit(monkeypatch):
                     "msisdn": "+99999991001",
                     "amount": 100,
                     "transaction_type": "P2P_TRANSFER",
-                    "current_location": {"latitude": 24.7, "longitude": 46.6},
+                    "current_location": {"latitude": 24.71, "longitude": 46.68},
                     "metadata": {"_force_deterministic": True},
                 },
                 headers={"Authorization": "Bearer ka"},
             )
             assert clean_audit.status_code == 200
-            response = client.post(
+            # A clean, non-high-risk verdict does not recommend QoD, so provisioning
+            # must be refused even for an authenticated caller.
+            assert clean_audit.json()["qod_recommended"] is False
+
+            refused = client.post(
                 "/api/v1/audit/qod/provision",
                 json={"audit_id": clean_audit.json()["audit_id"], "msisdn": "+99999991001"},
                 headers={"Authorization": "Bearer kb"},
             )
-        assert response.status_code == 403
-        with TestClient(main_module.app) as client:
-            same_tenant_response = client.post(
+            assert refused.status_code == 403
+
+            # A caller from the same tenant replaying the same audit_id is also
+            # refused: the audit never recommended QoD.
+            same_tenant = client.post(
                 "/api/v1/audit/qod/provision",
                 json={"audit_id": clean_audit.json()["audit_id"], "msisdn": "+99999991001"},
                 headers={"Authorization": "Bearer ka"},
             )
-        assert same_tenant_response.status_code == 403
+            assert same_tenant.status_code == 403
+
+            # A foreign/unknown audit_id is never accepted either.
+            foreign = client.post(
+                "/api/v1/audit/qod/provision",
+                json={"audit_id": str(uuid4()), "msisdn": "+99999991001"},
+                headers={"Authorization": "Bearer kb"},
+            )
+            assert foreign.status_code == 403
+
+        # No QoD session may have been provisioned by any of the refused calls.
+        trail = main_module.memory_engine.list_all_incidents("+99999991001", tenant_id="bank-b")
+        assert not any(r["metadata"].get("status") == "QOD_PROVISIONED" for r in trail)
     finally:
         main_module.memory_engine._local_store = []

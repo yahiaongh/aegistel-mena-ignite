@@ -19,8 +19,8 @@ except ImportError:
 # E.164: leading '+', non-zero country code, 8-15 digits total.
 MSISDN_PATTERN = r"^\+[1-9]\d{7,14}$"
 
-# The transaction surface AegisTel models. Unknown/foreign codes are rejected
-# loudly (422) instead of being silently treated as a default.
+# The transaction surface AegisTel models. Anything unknown gets a loud 422
+# instead of being silently defaulted.
 TRANSACTION_TYPES = {
     "WIRE_TRANSFER",
     "SAME_DAY_WIRE",
@@ -33,7 +33,7 @@ TRANSACTION_TYPES = {
     "BILL_PAYMENT",
 }
 
-# Bound free-form risk-context metadata so a giant payload cannot swamp the
+# Cap the free-form risk-context metadata so a giant payload can't swamp the
 # decision model or the audit log.
 MAX_METADATA_KEYS = 32
 MAX_METADATA_BYTES = 8192
@@ -52,11 +52,10 @@ class AuditRequest(BaseModel):
     transaction_type: str = "WIRE_TRANSFER"
     current_location: LocationInput
     request_qod_slice: bool = False
-    # NOTE: there is intentionally NO tenant field here. The tenant namespace is
-    # derived server-side from the API client's credential (see `_resolve_tenant`
-    # in main.py) and is never accepted from public JSON. `extra="forbid"` makes
-    # a client that tries to smuggle `tenant_id` in the body fail loudly (422)
-    # instead of being silently ignored.
+    # NOTE: deliberately NO tenant field here. The tenant namespace is derived
+    # server-side from the API client's credential (see `_resolve_tenant` in
+    # main.py) and never accepted from the public JSON. `extra="forbid"` turns a
+    # client trying to smuggle `tenant_id` in the body into a 422.
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("transaction_type")
@@ -138,10 +137,10 @@ class AuditResponse(BaseModel):
     tenant_id: str = "demo"
     risk_score: str
     status: str
-    # A recommendation ONLY. This decision pipeline never provisions a QoD
-    # session; it only signals that a step-up could be closed with one. The
-    # session itself is created by an explicit, authenticated, policy-gated
-    # confirm action (POST /api/v1/audit/qod/provision).
+    # A recommendation only. This pipeline never provisions a QoD session — it
+    # just signals that a step-up could be closed with one. The session itself
+    # is created by an explicit, authenticated, policy-gated confirm action
+    # (POST /api/v1/audit/qod/provision).
     qod_recommended: bool = False
     telemetry: NokiaApiTelemetry
     reasoning: str
@@ -155,11 +154,11 @@ class AuditResponse(BaseModel):
 class QoDProvisionRequest(BaseModel):
     """Explicit, consented request to provision a QoD session for a MSISDN.
 
-    Provisioning a QoD session lends a chargeable shared network resource to a
-    subscriber for a bounded duration, so this is deliberately a SEPARATE action
-    from the audit decision (which only returns `qod_recommended`). The endpoint
-    additionally requires an authenticated client (operator admin key or tenant
-    API key) and the server-side bank-policy flag AEGISTEL_QOD_POLICY_ENABLED.
+    A QoD session hands a chargeable shared network resource to a subscriber
+    for a bounded time, so this is deliberately a SEPARATE action from the
+    audit decision (which only returns `qod_recommended`). The endpoint also
+    requires an authenticated client (operator admin key or tenant API key) and
+    the server-side bank-policy flag AEGISTEL_QOD_POLICY_ENABLED.
     """
 
     model_config = ConfigDict(extra="forbid")

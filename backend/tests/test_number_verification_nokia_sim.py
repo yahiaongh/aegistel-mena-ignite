@@ -4,8 +4,8 @@ Comprehensive test for Number Verification using Nokia NaC simulation mode.
 Tests ALL simulated MSISDNs from Nokia Network-as-Code documentation:
 | Device_identifier | HTTP_status_code | Description |
 |---|---|---|
-| +99999991000 | 200 | Number verifies correctly (verified=True) |
-| +99999991001 | 200 | Number is not verified (verified=False) |
+| +99999991000 | 200 | Number is NOT verified (verified=False) |
+| +99999991001 | 200 | Number verifies correctly (verified=True) |
 | +99999990400 | 400 | Bad Request |
 | +99999990404 | 404 | Not found |
 | +99999990422 | 422 | Unprocessable Content |

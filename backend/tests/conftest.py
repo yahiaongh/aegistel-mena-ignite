@@ -1,20 +1,24 @@
 import os
 import tempfile
 import types
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 from dotenv import load_dotenv
 
-ROOT_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
+# Single source of truth: the repo-root .env (~/aegistel-mena-ignite/.env).
+ROOT_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(dotenv_path=ROOT_ENV_FILE, override=False)
 
 # Test determinism: keep LiteLLM from ever dialing out for its remote model-price
 # map (it would hang/DNS-fail on a sandboxed runner), and never auto-build remote
-# memory clients. Both must be explicit, not the default.
+# memory clients. Both must be explicit, not the default. The repo-root .env may
+# set AEGISTEL_LIVE_MEMORY=1 for the live demo — tests MUST override it after
+# dotenv so no Qdrant/remote client is ever built (hard assignment, not setdefault).
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 os.environ.setdefault("LITELLM_LOG", "ERROR")
-os.environ.setdefault("AEGISTEL_LIVE_MEMORY", "0")
+os.environ["AEGISTEL_LIVE_MEMORY"] = "0"
 
 
 def pytest_addoption(parser):
@@ -59,10 +63,16 @@ def force_deterministic_offline(request, monkeypatch):
     for key in ("GROQ_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY", "CEREBRAS_API_KEY"):
         setattr(settings, key, "")
 
-    # Disable mem0's live LLM extraction so record_incident / store_security_event
-    # (memory_agent.py:152-159) write only to the scratch store, with no Groq /
-    # Gemini request. Retrieval is already local-only via the [Round12] guard.
-    monkeypatch.setattr(memory_engine, "memory", None)
+    # Disable the Qdrant audit-history mirror and the Qdrant feedback mirror so
+    # no remote/vector-store client is ever dialed during the offline suite.
+    # record_incident / store_security_event (memory_agent.py) then write only
+    # to the scratch local store, with no Quorum/network request.
+    from app.qdrant_store import QdrantStore
+
+    monkeypatch.setattr(memory_engine, "qdrant", QdrantStore("aegistel_audit_history", enabled=False))
+    import app.feedback_store as _feedback_store
+
+    monkeypatch.setattr(_feedback_store, "_QDRANT", QdrantStore("aegistel_feedback", enabled=False))
 
     yield
 
@@ -97,6 +107,10 @@ def patch_nokia_sdk(request, monkeypatch):
                 retrieve_reachability_status=self._retrieve_reachability_status,
             )
             self.qod = types.SimpleNamespace(create_session_v1=self._create_qod_session)
+            self.number_verification = types.SimpleNamespace(verify_v2=self._verify_number)
+            self.device_swap = types.SimpleNamespace(check=self._check_device_swap)
+            self.number_recycling = types.SimpleNamespace(check=self._check_number_recycling)
+            self.congestion_insights = types.SimpleNamespace(query=self._query_congestion)
 
         def _check_swap(self, phone_number: str, max_age: int):
             return types.SimpleNamespace(swapped=(phone_number == "+99999991000"))
@@ -110,6 +124,14 @@ def patch_nokia_sdk(request, monkeypatch):
                 return types.SimpleNamespace(verification_result="FALSE")
             return types.SimpleNamespace(verification_result="TRUE")
 
+        def _verify_number(self, request: dict):
+            phone_number = request.get("phone_number", "")
+            if phone_number == "+99999991000":
+                return types.SimpleNamespace(device_phone_number_verified=False)
+            elif phone_number == "+99999991001":
+                return types.SimpleNamespace(device_phone_number_verified=True)
+            return types.SimpleNamespace(device_phone_number_verified=None)
+
         def _retrieve_roaming_status(self, device: dict):
             return types.SimpleNamespace(roaming=False, country_code=None, country_name=[])
 
@@ -118,6 +140,31 @@ def patch_nokia_sdk(request, monkeypatch):
 
         def _create_qod_session(self, application_server: dict, qos_profile: str, device: dict, duration: int):
             return types.SimpleNamespace(session_id="sdk-qod-session", qos_status="REQUESTED")
+
+        def _check_device_swap(self, phone_number: str, max_age: int):
+            if phone_number == "+99999991000":
+                return types.SimpleNamespace(swapped=True)
+            elif phone_number == "+99999991001":
+                return types.SimpleNamespace(swapped=False)
+            return types.SimpleNamespace(swapped=None)
+
+        def _check_number_recycling(self, phone_number: str, specified_date: str):
+            if phone_number == "+99999991000":
+                return types.SimpleNamespace(phoneNumberRecycled=True)
+            return types.SimpleNamespace(phoneNumberRecycled=False)
+
+        def _query_congestion(self, device: dict, start, end):
+            phone_number = device.get("phone_number", "")
+            level = {"+99999991000": "High", "+99999991001": "Low", "+99999991002": "Medium"}.get(phone_number, "Low")
+            now = datetime.now(timezone.utc)
+            return [
+                types.SimpleNamespace(
+                    time_interval_start=now - timedelta(minutes=30),
+                    time_interval_stop=now,
+                    congestion_level=level,
+                    confidence_level=95,
+                )
+            ]
 
     fake_client = _FakeNacClient()
     monkeypatch.setattr(tool_module, "nac_client", fake_client)

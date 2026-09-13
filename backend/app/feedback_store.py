@@ -1,11 +1,11 @@
 # backend/app/feedback_store.py
 """Lightweight JSONL feedback store for the live demo.
 
-Visitors (judges, investors, operators, anyone) rate the product across
-independent feature dimensions (1-5 stars), pick a quick mood, and may leave
-optional text. The founder reads everything back through the admin-protected
-route only. No database, no accounts: a single append-only file, scoped the
-same way as the local memory store.
+Visitors (judges, investors, operators, anyone) rate the product on independent
+feature dimensions (1-5 stars), pick a quick mood, and can leave optional text.
+The founder reads everything back through the admin-protected route only. No
+database, no accounts: a single append-only file, scoped the same way as the
+local memory store.
 """
 import json
 import os
@@ -13,6 +13,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from app.qdrant_store import QdrantStore
 
 FEATURE_FIELDS: Dict[str, str] = {
     "verdict": "Fraud verdict quality",
@@ -31,6 +33,11 @@ FEEDBACK_STORE_PATH = Path(
         str(Path(__file__).resolve().parents[1] / "data" / "feedback.jsonl"),
     )
 )
+
+# Durable second copy: with AEGISTEL_LIVE_MEMORY=1 and Qdrant configured,
+# every feedback record is also mirrored to Qdrant so visitor feedback survives
+# a local disk wipe or restart. Best-effort only; the JSONL file is authoritative.
+_QDRANT = QdrantStore("aegistel_feedback")
 
 
 def _now() -> str:
@@ -99,11 +106,24 @@ def submit_feedback(payload: Dict[str, Any], meta: Optional[Dict[str, Any]] = No
     FEEDBACK_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
     with FEEDBACK_STORE_PATH.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+    _QDRANT.upsert(str(record["id"]), record)
     return record
 
 
 def list_feedback(limit: int = 200) -> List[Dict[str, Any]]:
-    records = _load()
+    """Latest feedback merged from the JSONL file and the Qdrant mirror.
+
+    The local file record wins for a given id (it is the authoritative copy);
+    Qdrant fills in anything the local mount is missing (e.g. after a server
+    restart on empty storage).
+    """
+    by_id: Dict[str, Dict[str, Any]] = {r.get("id"): r for r in _load() if r.get("id")}
+    if _QDRANT.enabled:
+        for r in _QDRANT.list_all(limit=20000):
+            rid = r.get("id")
+            if rid and rid not in by_id:
+                by_id[rid] = r
+    records = list(by_id.values())
     records.sort(key=lambda r: r.get("created_at", ""), reverse=True)
     return records[: max(1, int(limit))]
 

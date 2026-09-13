@@ -1,4 +1,10 @@
 import type { NextConfig } from "next";
+import path from "path";
+import { loadEnvConfig } from "@next/env";
+
+// Single source of truth for env: the repo-root .env (~/aegistel-mena-ignite/.env).
+// Loaded before config/bundling so NEXT_PUBLIC_* vars reach the client bundle.
+loadEnvConfig(path.resolve(process.cwd(), ".."));
 
 const nextConfig: NextConfig = {
   output: "standalone",

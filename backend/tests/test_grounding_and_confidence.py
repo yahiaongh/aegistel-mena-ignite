@@ -39,10 +39,11 @@ def test_reconcile_sanitizes_country_claim_when_roaming_country_empty():
     assert any("sanitized reasoning" in msg for msg in mismatch_reasons)
 
 
-def test_reconcile_floor_substitutes_coherent_reasoning_on_downgrade():
-    # Regression: a CrewAI output that downgrades the deterministic STEP_UP
-    # verdict to APPROVED must keep the enforced structured status AND must not
-    # leave contradicting prose ("approved") behind next to a STEP_UP verdict.
+def test_fail_safe_gate_substitutes_coherent_reasoning_on_downgrade_attempt():
+    # Regression: even under LLM-owned verdicts, a fail-safe gate trip (missing
+    # carrier/identity evidence) is a hard invariant. A CrewAI output that tries
+    # to downgrade it to APPROVED must keep the enforced verdict AND must not
+    # leave contradicting prose ("approved") behind next to a step-up verdict.
     parsed = {
         "status": "APPROVED",
         "risk_score": "LOW",
@@ -61,9 +62,10 @@ def test_reconcile_floor_substitutes_coherent_reasoning_on_downgrade():
             "roaming_country": None,
             "qod_session_active": False,
             "qod_profile": None,
-            "reasoning": "Specialist synthesis identified: Prior incident memory for the subscriber corroborates elevated risk (high-severity history); recurrence evidence is weighted into this verdict.",
+            "reasoning": "Specialist synthesis identified: required carrier evidence was unavailable; locked to step-up (fail-safe).",
             "recommended_action": "Escalate the payment with a QoD-assisted step-up and human review.",
-        }
+        },
+        "trace": [{"action": "FAIL_SAFE_GATE"}],
     }
 
     assessment, mismatch_reasons = _reconcile_crew_output(parsed, deterministic)
@@ -73,7 +75,7 @@ def test_reconcile_floor_substitutes_coherent_reasoning_on_downgrade():
     assert "APPROVED" not in assessment["reasoning"].upper()
     assert assessment["reasoning"] == deterministic["assessment"]["reasoning"]
     assert assessment["recommended_action"] == deterministic["assessment"]["recommended_action"]
-    assert any("substituting deterministic reasoning" in msg for msg in mismatch_reasons)
+    assert any("fail-safe" in msg for msg in mismatch_reasons)
 
 
 def test_reachability_status_is_built_from_tool_evidence():
@@ -377,8 +379,8 @@ def test_roaming_plus_swap_escalates_beyond_step_up():
         ],
         [],
     )
-    assert result["assessment"]["status"] == "STEP_UP_REQUIRED"
-    assert result["assessment"]["risk_score"] in {"HIGH", "CRITICAL"}
+    assert result["assessment"]["status"] == "REJECTED"
+    assert result["assessment"]["risk_score"] == "CRITICAL"
 
 
 def test_clean_signal_low_amount_approves():
@@ -493,9 +495,11 @@ def test_memory_bumps_active_risk_one_level():
     assert result["assessment"]["risk_score"] == "HIGH"
 
 
-def test_llm_cannot_downgrade_deterministic_verdict():
-    # Simulate a deterministic STEP_UP and an LLM that returns APPROVED/LOW.
-    parsed = {"status": "APPROVED", "risk_score": "LOW", "reasoning": "LLM says OK"}
+def test_llm_may_downgrade_risk_derived_step_up():
+    # The LLM owns the verdict on risk-derived escalations: a deterministic
+    # STEP_UP grounded in an amount threshold may be downgraded to APPROVED when
+    # the LLM evaluates the full evidence and judges it acceptable.
+    parsed = {"status": "APPROVED", "risk_score": "LOW", "reasoning": "LLM evaluated the evidence and approved the transaction."}
     deterministic = {
         "assessment": {
             "status": "STEP_UP_REQUIRED",
@@ -509,20 +513,53 @@ def test_llm_cannot_downgrade_deterministic_verdict():
             "qod_profile": None,
             "reasoning": "Deterministic step-up due to amount.",
             "recommended_action": "Step-up",
-        }
+        },
+        "trace": [],
     }
 
     assessment, mismatch_reasons = _reconcile_crew_output(parsed, deterministic)
 
-    # Final assessment must not be more lenient than deterministic
-    assert assessment["status"] == "STEP_UP_REQUIRED"
-    assert assessment["risk_score"] == "HIGH"
-    assert any("downgrade" in msg or "lower risk_score" in msg for msg in mismatch_reasons)
+    assert assessment["status"] == "APPROVED"
+    assert assessment["risk_score"] == "LOW"
+    assert assessment["reasoning"] == parsed["reasoning"]
+    assert not any("fail-safe" in msg for msg in mismatch_reasons)
 
 
-def test_llm_cannot_invent_risk_on_clean_case():
-    # Deterministic APPROVED (clean signal, sub-threshold amount) with an LLM
-    # that hallucinates an escalation. The reconcile layer must cap it.
+def test_confirmed_compromise_cannot_be_downgraded():
+    # A confirmed compromise (BLOCKED/REJECTED) is a hard invariant regardless
+    # of what the LLM returns: canceling it back to APPROVED is not a decision
+    # the model is allowed to make.
+    parsed = {"status": "APPROVED", "risk_score": "LOW", "reasoning": "The device looks fine now."}
+    deterministic = {
+        "assessment": {
+            "status": "BLOCKED",
+            "risk_score": "CRITICAL",
+            "sim_swap_detected": True,
+            "last_sim_swap_date": "2026-08-12T00:00:00Z",
+            "location_verification_match": False,
+            "roaming_status": "INTERNATIONAL_ROAMING",
+            "roaming_country": None,
+            "qod_session_active": False,
+            "qod_profile": None,
+            "reasoning": "Confirmed compromise detected.",
+            "recommended_action": "Reject and block.",
+        },
+        "trace": [],
+    }
+
+    assessment, mismatch_reasons = _reconcile_crew_output(parsed, deterministic)
+
+    assert assessment["status"] == "BLOCKED"
+    assert assessment["risk_score"] == "CRITICAL"
+    assert "looks fine" not in assessment["reasoning"]
+    assert assessment["reasoning"] == deterministic["assessment"]["reasoning"]
+    assert any("fail-safe" in msg for msg in mismatch_reasons)
+
+
+def test_llm_may_escalate_clean_case():
+    # The no-escalation ceiling is removed: when providers are configured the
+    # LLM is the arbiter, and it may flag a nominally clean case for step-up if
+    # its reading of the evidence justifies it.
     parsed = {
         "status": "STEP_UP_REQUIRED",
         "risk_score": "HIGH",
@@ -546,17 +583,17 @@ def test_llm_cannot_invent_risk_on_clean_case():
             "qod_profile": None,
             "reasoning": "Specialist synthesis found no strong compromise indicators and approved the transaction for the supplied network context.",
             "recommended_action": "Allow the transaction and continue monitoring for additional telemetry.",
-        }
+        },
+        "trace": [],
     }
 
     assessment, mismatch_reasons = _reconcile_crew_output(parsed, deterministic)
 
-    # A clean case must never be escalated just because the LLM ran.
-    assert assessment["status"] == "APPROVED"
-    assert assessment["risk_score"] == "LOW"
-    # Judgment text must stay coherent with the forced APPROVED verdict.
-    assert "no strong compromise indicators" in assessment["reasoning"]
-    assert any("escalate" in msg for msg in mismatch_reasons)
+    # The LLM verdict is preserved; the deterministic APPROVED is not restored.
+    assert assessment["status"] == "STEP_UP_REQUIRED"
+    assert assessment["risk_score"] == "HIGH"
+    assert assessment["reasoning"] == parsed["reasoning"]
+    assert not any("fail-safe" in msg for msg in mismatch_reasons)
 
 
 def test_llm_may_intensify_confirmed_risk():

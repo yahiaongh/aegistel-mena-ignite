@@ -34,16 +34,16 @@ from app.schemas.telemetry import AuditRequest, LocationInput
 
 # Use only documented stable numbers to avoid live-data drift and quota noise.
 SCENARIOS = [
-    {"msisdn": "+99999991000", "amount": 120000.0, "expected": "STEP_UP_REQUIRED"},
+    {"msisdn": "+99999991000", "amount": 120000.0, "expected": "REJECTED"},
     {"msisdn": "+99999991001", "amount": 100.0, "expected": "APPROVED"},
     {"msisdn": "+99999991000", "amount": 100.0, "expected": "STEP_UP_REQUIRED"},
-    {"msisdn": "+99999991001", "amount": 25000.0, "expected": "APPROVED"},
-    {"msisdn": "+99999991000", "amount": 99999.0, "expected": "STEP_UP_REQUIRED"},
+    {"msisdn": "+99999991001", "amount": 25000.0, "expected": "STEP_UP_REQUIRED"},
+    {"msisdn": "+99999991000", "amount": 99999.0, "expected": "REJECTED"},
     {"msisdn": "+99999991001", "amount": 100000.0, "expected": "STEP_UP_REQUIRED"},
-    {"msisdn": "+99999991000", "amount": 50000.0, "expected": "STEP_UP_REQUIRED"},
-    {"msisdn": "+99999991001", "amount": 50000.0, "expected": "APPROVED"},
-    {"msisdn": "+99999991000", "amount": 120000.0, "expected": "STEP_UP_REQUIRED"},
-    {"msisdn": "+99999991001", "amount": 99999.0, "expected": "APPROVED"},
+    {"msisdn": "+99999991000", "amount": 50000.0, "expected": "REJECTED"},
+    {"msisdn": "+99999991001", "amount": 50000.0, "expected": "STEP_UP_REQUIRED"},
+    {"msisdn": "+99999991000", "amount": 120000.0, "expected": "REJECTED"},
+    {"msisdn": "+99999991001", "amount": 99999.0, "expected": "STEP_UP_REQUIRED"},
 ]
 
 _STATUS_ORDER = ["APPROVED", "STEP_UP_REQUIRED", "MANUAL_REVIEW", "REJECTED", "BLOCKED"]

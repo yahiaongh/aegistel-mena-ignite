@@ -6,11 +6,10 @@ crew; the report scores defense readiness, grades the engine, and lists the
 blind spots the drill actually discovered.
 
 The attacker is dynamic: every run draws a fresh lineup from an archetype
-arsenal (14 scenarios). When an LLM provider is available, the Fraud Genie
-curates the lineup — fresh names, intents, amounts and regions for this run.
-Otherwise a seeded sampler rotates scenarios deterministically. Either way,
-every play is grounded on real Nokia sandbox evidence profiles, so verdicts
-stay honest.
+arsenal (14 scenarios). With an LLM provider available, the Fraud Genie
+curates it — fresh names, intents, amounts and regions for this run.
+Otherwise a seeded sampler rotates scenarios deterministically. Either way
+each play is grounded in real Nokia sandbox evidence, so verdicts stay honest.
 """
 
 import json
@@ -43,8 +42,8 @@ _OUTCOME_WEIGHTS = {
     "ERROR": 0.0,
 }
 
-# Evidence profiles: MSISDNs are Nokia's documented sandbox lines whose
-# behaviors produce stable telemetry for the crew to read.
+# Evidence profiles: Nokia's documented sandbox lines, whose stable telemetry
+# is what the crew reads.
 _EVIDENCE_MSISDNS = {"+99999991000", "+99999991001", "+99999991002", "+9999123456"}
 
 
@@ -288,7 +287,7 @@ _ARCHETYPES: List[Dict[str, Any]] = [
             "QoD-Provisioned Transfer",
             "Twenty-Five-to-Ninety-Nine Play",
         ],
-        "intent": "Attacker targets the band between the QoD tripwire and the hard amount step-up, where provisioning happens but approval still clears.",
+        "intent": "Attacker targets the band between the QoD tripwire and the hard amount step-up, betting that provisioning happens while approval still clears. The blue team now hard-escalates this band, so the play scores defense readiness for the tripwire catch.",
         "history": None,
     },
     {
@@ -660,10 +659,10 @@ def run_adversarial_drill(
     The lineup is re-curated every run: the Fraud Genie LLM shapes it when a
     provider is available; otherwise a seeded sampler rotates scenarios. Plays
     are independent and run concurrently (bounded worker pool) through the
-    deterministic grounded verdict engine. Why not LLM-adjudicated plays on the
+    deterministic grounded verdict engine. We don't LLM-adjudicate plays on the
     hosted instance: a second concurrent-LLM drill OOMs the 512 MB free worker
-    (observed twice live as empty-body 502/503). The Fraud Genie curation is
-    the single LLM touchpoint, capped at 20s.
+    (seen twice live as empty-body 502/503). The Fraud Genie curation is the
+    single LLM touchpoint, capped at 20s.
     """
     curated_by_llm = False
     deadline = _time.monotonic() + _DRILL_WALL_CLOCK_S
@@ -682,18 +681,18 @@ def run_adversarial_drill(
 
     # Two concurrent play crews max: the 512 MB free instance OOM'd with LLM
     # crews piling up (observed as empty-body 502/503 on the live site). Plays
-    # run through the deterministic engine now, so this is just a concurrency
-    # bound on the grounded ADJUDICATION path — memory-flat and fast.
+    # run through the deterministic engine now, so this only bounds concurrency
+    # on the grounded adjudication path — cheap and memory-flat.
     workers = min(2, len(playbook))
     play_results: List[Dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        # Plays ALWAYS go through the grounded deterministic engine (see the
-        # module docstring: concurrent LLM crews OOM the free instance). The
-        # LLM touchpoint is the Fraud Genie lineup curation above only.
+        # Plays always run through the grounded deterministic engine (see the
+        # module docstring — concurrent LLM crews OOM the free instance). The
+        # only LLM touchpoint is the Fraud Genie lineup curation above.
         futures = {pool.submit(_execute_play, play, False): play for play in playbook}
         for future, play in futures.items():
-            # Share ONE global deadline across all plays (and the narration):
-            # each wait gets the SMALL remaining budget, so the whole drill can
+            # Share one global deadline across all plays and the narration:
+            # each wait gets the remaining budget, so the whole drill can
             # never outlive _DRILL_WALL_CLOCK_S.
             remaining = deadline - _time.monotonic()
             budget = max(0.1, remaining)

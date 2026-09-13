@@ -17,7 +17,7 @@ except Exception:  # pragma: no cover - optional dependency fallback
 
 
 class TTSTextNormalizer:
-    """Normalize spoken text for TTS, with a focus on phone numbers and dates."""
+    """Normalize spoken text for TTS, mainly phone numbers and dates."""
 
     _PHONE_PATTERN = re.compile(r"\+?\d[\d\s().-]{6,}\d")
     ISO_COUNTRY_NAMES = ISO_COUNTRY_NAMES

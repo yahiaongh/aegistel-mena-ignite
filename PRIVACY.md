@@ -36,10 +36,13 @@ account‑takeover (ATO) and SIM‑swap payment fraud before settlement.
 
 - Audit verdicts are recorded in the incident store. Default: a local JSONL
   file (`data/local_memory.jsonl`, overridable via `AEGISTEL_MEMORY_PATH`).
-  When `AEGISTEL_LIVE_MEMORY=1` is set, records are mirrored to mem0/Qdrant.
-- Operator history and the dashboard's audit-history panel read this store.
+  When `AEGISTEL_LIVE_MEMORY=1` is set, records are ALSO mirrored to the
+  `aegistel_audit_history` Qdrant collection (durable across restarts).
+- Operator history and the dashboard's audit-history panel read this store
+  (local + Qdrant merged).
 - Feedback submissions (`data/feedback.jsonl`) are retained for product
-  iteration.
+  iteration and mirrored to the `aegistel_feedback` Qdrant collection under
+  the same flag.
 
 ## 4. Deletion / erasure
 

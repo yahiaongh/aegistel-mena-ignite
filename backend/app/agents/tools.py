@@ -1,31 +1,37 @@
 # app/agents/tools.py
-"""Nokia NaC (Network-as-Code) integration — sandbox-provisioned, per-signal provenance.
+"""Nokia NaC (Network-as-Code) integration — SDK-first per-signal provenance.
 
-The eight CAMARA tools run through Nokia's Network-as-Code SDK (RapidAPI), but this
-is a *sandbox-provisioned* integration, not eight guaranteed live carrier signals.
-Every tool follows the same explicit ladder and labels the result with its actual
-source:
+The eight CAMARA tools run through Nokia's Network-as-Code SDK (RapidAPI) and
+every tool follows the same explicit ladder, labeling the result with its actual
+source. The SDK client is **lazily initialized** at the first tool call
+(`_get_nac_client()`), so the SDK tier is always genuinely attempted, even on
+the very first audit:
 
     1. Nokia NaC SDK
     2. CAMARA REST passthrough (Nokia NaC REST API)
     3. Documented local sandbox simulator (Nokia CAMARA Sandbox / LOCAL FALLBACK)
 
-Reasons a signal can land on a fallback — and these are observed, not theoretical:
+Why a signal lands on a fallback — observed, not theoretical:
 
-- A NaC capability with no entitlement on the provisioned key returns an auth error
-  (Number Verification is the typical case: ~401), so that tool degrades to the
-  documented sandbox semantics.
+- A NaC capability on the provisioned key is entitled but OAuth-gated (Number
+  Verification's v2 flow needs an `Authorization` header from the SDK consent
+  flow; without it the endpoint returns ~401), so that tool degrades through
+  SDK → REST to the documented sandbox semantics.
 - An arbitrary (non-demo) E.164 has no simulator behavior, so Number Verification
   reports honest UNKNOWN instead of "verified".
+- The Nokia host is transiently unreachable, in which case each tool rides the
+  same SDK → REST → sandbox ladder automatically and no signal is ever silently
+  assumed.
 
-Therefore the defensible product claim is "Nokia NaC sandbox integration with
-per-signal source evidence", never "eight live carrier checks" — the Evidence
-Explorer renders the per-signal source badge for exactly that reason.
-"""
+Therefore the defensible product claim is "Nokia NaC integration with per-signal
+source evidence", never "eight unconditional live carrier checks" — the Evidence
+Explorer renders the per-signal source badge for exactly that reason."""
 import json
 import os
+import sys
 from functools import wraps
 from typing import Any, Dict
+from urllib.parse import urlsplit
 
 import requests
 
@@ -52,34 +58,131 @@ class _LocalTool:
 def tool(func):
     return _LocalTool(func)
 
+NOKIA_NAC_HOST = os.getenv("NOKIA_NAC_HOST", "network-as-code.nokia.rapidapi.com")
 NOKIA_BASE_URL = os.getenv(
     "NOKIA_CAMARA_BASE_URL",
-    "https://network-as-code.p-eu.rapidapi.com/passthrough/camara/v1",
+    f"https://{NOKIA_NAC_HOST}/passthrough/camara/v1",
 )
 NOKIA_API_KEY = os.getenv("NOKIA_NAC_API_KEY", "sandbox-key")
 
-try:
-    from network_as_code import NetworkAsCodeApi
+# Demo simulator subscribers are registered at the Riyadh home circle the
+# dashboard defaults to (24.7136, 46.6753). Nokia's demo entitlement answers
+# location verification per device line (TRUE for the clean line, FALSE for the
+# fraud line) WITHOUT evaluating the queried circle geometry — the 50/50 device
+# coordinates in the frontend still came back "TRUE". So every ladder tier adds
+# its own geometry coherence guard: if the queried circle does NOT contain the
+# subscriber's registered home location, a TRUE/PARTIAL network answer is
+# contradictory and is downgraded to FALSE ("OUTSIDE GEOFENCE" on the tile).
+_DEMO_HOME_LAT = 24.7136
+_DEMO_HOME_LON = 46.6753
+_DEMO_HOME_MSISDNS = {"+99999991000", "+99999991001", "+99999991002", "+99999991003"}
 
-    print(f"[TOOLS INIT] NOKIA_API_KEY configured: {'YES' if NOKIA_API_KEY != 'sandbox-key' else 'NO (using sandbox-key)'}")
-    nac_client = NetworkAsCodeApi(
-        api_key=NOKIA_API_KEY, rapidapi_host="network-as-code.nokia.rapidapi.com"
-    )
-    print(f"[TOOLS INIT] nac_client initialized: {nac_client is not None}")
-    if nac_client:
-        print(f"[TOOLS INIT] Available modules: {[a for a in dir(nac_client) if not a.startswith('_')]}")
-        print(f"[TOOLS INIT] Has number_verification: {hasattr(nac_client, 'number_verification')}")
-except Exception as e:
-    print(f"[TOOLS INIT] nac_client initialization failed: {type(e).__name__}: {e}")
-    import traceback
-    traceback.print_exc()
-    nac_client = None
+
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in meters between two WGS84 coordinates."""
+    import math
+
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    return 6371008.8 * 2 * math.asin(math.sqrt(a))
+
+
+def _geo_guard(
+    msisdn: str,
+    latitude: float,
+    longitude: float,
+    radius: int,
+    verification_result: str,
+) -> tuple[str, Dict[str, Any]]:
+    """Geometry coherence check applied to every ladder tier.
+
+    Returns ``(result, extra_payload_fields)``. For the demo lines whose
+    registered home location is known, the requested circle must actually
+    contain that home; otherwise a ``TRUE``/``PARTIAL`` answer is impossible and
+    is downgraded to ``FALSE``. Non-demo numbers keep the network answer, and
+    the distance is always attached so the Evidence Explorer can show it.
+    """
+    extra: Dict[str, Any] = {"geo_match_meters": None}
+    if msisdn not in _DEMO_HOME_MSISDNS:
+        return verification_result, extra
+    try:
+        distance = _haversine_m(latitude, longitude, _DEMO_HOME_LAT, _DEMO_HOME_LON)
+    except (TypeError, ValueError):
+        return verification_result, extra
+    if math_isnan(distance):
+        return verification_result, extra
+    extra["geo_match_meters"] = round(distance, 1)
+    if distance > max(radius, 0) and verification_result in {"TRUE", "PARTIAL"}:
+        return "FALSE", {
+            **extra,
+            "geo_overridden": True,
+            "geo_detail": f"{distance:,.0f}m from Riyadh home circle exceeds {radius:,}m radius",
+        }
+    return verification_result, extra
+
+
+def math_isnan(value: float) -> bool:
+    try:
+        import math
+
+        return math.isnan(value)
+    except (TypeError, ValueError):
+        return True
+
+
+def _get_nac_client():
+    """Create the NaC client once, lazily. Always None in test mode.
+
+    A single initializer: in pytest the client is stubbed by conftest (and the
+    real SDK would be network-dependent), so construction is skipped there.
+    Outside tests the module-global is built on first use and cached.
+    """
+    global nac_client
+    if nac_client is not None:
+        return nac_client
+    if "pytest" in sys.modules or os.getenv("PYTEST_CURRENT_TEST"):
+        return None
+    try:
+        from network_as_code import NetworkAsCodeApi
+
+        print(
+            f"[TOOLS INIT] NOKIA_API_KEY configured: "
+            f"{'YES' if NOKIA_API_KEY != 'sandbox-key' else 'NO (using sandbox-key)'}"
+        )
+        nac_client = NetworkAsCodeApi(api_key=NOKIA_API_KEY, rapidapi_host=NOKIA_NAC_HOST)
+        print(f"[TOOLS INIT] nac_client ready: {nac_client is not None}")
+        if nac_client:
+            print(
+                f"[TOOLS INIT] Available modules: "
+                f"{[a for a in dir(nac_client) if not a.startswith('_')]}"
+            )
+            print(
+                f"[TOOLS INIT] Has number_verification: "
+                f"{hasattr(nac_client, 'number_verification')}"
+            )
+    except Exception as exc:
+        print(f"[TOOLS INIT] nac_client initialization failed: {type(exc).__name__}: {exc}")
+        nac_client = None
+    return nac_client
+
+
+# Module-global, lazily initialized and cached on first use.
+nac_client = None
 
 
 def _get_headers() -> Dict[str, str]:
+    """RapidAPI authentication headers.
+
+    x-rapid-api-host must match the hostname of NOKIA_BASE_URL exactly or
+    RapidAPI rejects the call, so it is derived from the URL rather than
+    hardcoded (the SDK host and the REST base can differ by region).
+    """
+    host = urlsplit(NOKIA_BASE_URL).hostname or NOKIA_NAC_HOST
     return {
         "Content-Type": "application/json",
-        "x-rapid-api-host": "network-as-code.nokia.rapidapi.com",
+        "x-rapid-api-host": host,
         "x-rapidapi-key": NOKIA_API_KEY,
     }
 
@@ -89,20 +192,21 @@ def _safe_json(payload: Dict[str, Any]) -> str:
 
 @tool
 def check_sim_swap(msisdn: str, max_age: int = 240) -> str:
-    """Queries the Nokia NaC CAMARA SIM Swap API to inspect recent SIM changes."""
+    """Check the Nokia NaC CAMARA SIM Swap API for recent SIM changes."""
     print(f"[SWAP] Checking SIM swap for {msisdn} with max_age {max_age} hours")
 
     # 1. Primary Method: Official Nokia NaC Python SDK
-    if nac_client:
+    client = _get_nac_client()
+    if client:
         try:
             # Official SDK usage: client.sim_swap.check(phone_number, max_age)
-            sim_swap_result = nac_client.sim_swap.check(
+            sim_swap_result = client.sim_swap.check(
                 phone_number=msisdn, max_age=max_age
             )
 
-            # Returns an object with boolean attribute 'swapped'
+            # Response has a boolean `swapped` field
             swapped = getattr(sim_swap_result, "swapped", False)
-            sim_swap_date = nac_client.sim_swap.retrieve_date(phone_number=msisdn)
+            sim_swap_date = client.sim_swap.retrieve_date(phone_number=msisdn)
             res = {
                 "swapped": swapped,
                 "last_sim_swap_date": sim_swap_date.latest_sim_change.isoformat(),
@@ -115,7 +219,7 @@ def check_sim_swap(msisdn: str, max_age: int = 240) -> str:
             print(f"[SWAP:SDK ERROR] Nokia NaC SDK SIM Swap check failed: {e}")
 
     # 2. Fallback Method: Direct CAMARA REST API Call
-    url = f"{NOKIA_BASE_URL}/passthrough/camara/v1/sim-swap/sim-swap/v0/check"
+    url = f"{NOKIA_BASE_URL}/sim-swap/sim-swap/v0/check"
     payload = {"phoneNumber": msisdn, "maxAge": max_age}
     try:
         response = requests.post(url, headers=_get_headers(), json=payload, timeout=5)
@@ -137,16 +241,28 @@ def check_sim_swap(msisdn: str, max_age: int = 240) -> str:
         "+99999991000": True,
         "+99999991001": False,
     }
-    swapped = sandbox_map.get(msisdn)
-    if swapped is None:
-        swapped = False
-        print(f"[SWAP:SANDBOX] No documented simulator behavior for {msisdn}; defaulting to not swapped.")
+    if msisdn in sandbox_map:
+        swapped = sandbox_map[msisdn]
+        return _safe_json(
+            {
+                "swapped": swapped,
+                "swap_age_hours": 6 if swapped else None,
+                "status_code": 200,
+                "source": "Nokia CAMARA Sandbox",
+            }
+        )
+    # No documented simulator behavior: report the signal as unknown (no
+    # `swapped` key) so the fail-safe gate escalates instead of treating an
+    # unchecked number as a confirmed-clean one.
+    print(
+        f"[SWAP:SANDBOX] No documented simulator behavior for {msisdn}; "
+        "reporting UNKNOWN, not not-swapped."
+    )
     return _safe_json(
         {
-            "swapped": swapped,
-            "swap_age_hours": 6 if swapped else None,
+            "verificationStatus": "UNKNOWN",
             "status_code": 200,
-            "source": "Nokia CAMARA Sandbox",
+            "source": "Nokia CAMARA Sandbox (local fallback, undocumented signal)",
         }
     )
 
@@ -155,16 +271,18 @@ def check_sim_swap(msisdn: str, max_age: int = 240) -> str:
 def check_device_swap(msisdn: str, max_age: int = 120) -> str:
     """Check whether the subscriber recently changed handsets.
 
-    A recent device swap is distinct from a SIM swap and is useful corroborating
-    evidence for account takeover. The documented NaC CAMARA REST endpoint is
-    used when entitled; the local simulator remains explicit in the response.
+    Distinct from a SIM swap, and useful corroborating evidence for account
+    takeover. Uses the documented NaC CAMARA REST endpoint when entitled; the
+    local simulator stays explicit in the response.
     """
-    if nac_client and hasattr(nac_client, "device_swap"):
+    client = _get_nac_client()
+    if client and hasattr(client, "device_swap"):
         try:
-            result = nac_client.device_swap.check(phone_number=msisdn, max_age=max_age)
+            result = client.device_swap.check(phone_number=msisdn, max_age=max_age)
+            swapped = getattr(result, "swapped", None)
             return _safe_json(
                 {
-                    "deviceSwapped": bool(getattr(result, "swapped", False)),
+                    "deviceSwapped": (None if swapped is None else bool(swapped)),
                     "maxAge": max_age,
                     "status_code": 200,
                     "source": "Nokia NaC SDK",
@@ -183,9 +301,10 @@ def check_device_swap(msisdn: str, max_age: int = 120) -> str:
         )
         if response.status_code == 200:
             data = response.json()
+            swapped = data.get("swapped") if isinstance(data, dict) else None
             return _safe_json(
                 {
-                    "deviceSwapped": bool(data.get("swapped", False)),
+                    "deviceSwapped": (None if swapped is None else bool(swapped)),
                     "maxAge": max_age,
                     "status_code": 200,
                     "source": "Nokia NaC REST API",
@@ -219,16 +338,17 @@ def verify_location(
     print(f"[VERIFY_LOC] Target Coordinates: Lat {latitude}, Lon {longitude}")
     print(f"[VERIFY_LOC] Search Radius: {radius} meters")
     print(
-        f"[VERIFY_LOC] SDK Available: {bool(nac_client)} | Location Module: {hasattr(nac_client, 'location') if nac_client else False}"
+        f"[VERIFY_LOC] SDK Available: {bool(_get_nac_client())} | Location Module: {hasattr(_get_nac_client(), 'location') if _get_nac_client() else False}"
     )
 
     # 1. Primary Method: Official Nokia NaC Python SDK
-    if nac_client and hasattr(nac_client, "location"):
+    client = _get_nac_client()
+    if client and hasattr(client, "location"):
         try:
 
-            # Call location verification via Nokia NaC SDK
-            # Signature: client.location.verify_location(device=device, latitude=latitude, longitude=longitude, radius=radius)
-            location_res = nac_client.location.verify_v1(
+            # Location verification via the SDK:
+            # client.location.verify_v1(device={"phone_number": msisdn}, area={...}, max_age=3600)
+            location_res = client.location.verify_v1(
                 device={"phone_number": msisdn},
                 area={
                     "area_type": "CIRCLE",
@@ -241,6 +361,9 @@ def verify_location(
             # Extract verification outcome ("TRUE", "FALSE", "PARTIAL", "UNKNOWN")
             raw_result = getattr(location_res, "verification_result", "TRUE")
             verification_result = str(raw_result).upper()
+            verification_result, geo_extra = _geo_guard(
+                msisdn, latitude, longitude, radius, verification_result
+            )
 
             res_payload = {
                 "verificationResult": verification_result,
@@ -249,6 +372,7 @@ def verify_location(
                 "radius_meters": radius,
                 "latitude": latitude,
                 "longitude": longitude,
+                **geo_extra,
             }
 
             output_json = _safe_json(res_payload)
@@ -278,13 +402,17 @@ def verify_location(
         if response.status_code == 200:
             data = response.json()
             raw_result = data.get("verificationResult", "TRUE")
+            verification_result, geo_extra = _geo_guard(
+                msisdn, latitude, longitude, radius, str(raw_result).upper()
+            )
 
             res_payload = {
-                "verificationResult": str(raw_result).upper(),
+                "verificationResult": verification_result,
                 "status_code": 200,
                 "source": "Nokia NaC REST API",
                 "radius_meters": radius,
                 "matchRate": data.get("matchRate"),
+                **geo_extra,
             }
             output_json = _safe_json(res_payload)
             print(f"[VERIFY_LOC:REST SUCCESS] Response Payload: {output_json}")
@@ -313,8 +441,11 @@ def verify_location(
     }
     sandbox_entry = map.get(msisdn)
     if sandbox_entry is None:
-        sandbox_entry = (200, "TRUE")
-        print(f"[VERIFY_LOC:SANDBOX FALLBACK] No documented simulator behavior for {msisdn}; defaulting to TRUE.")
+        sandbox_entry = (200, "UNKNOWN")
+        print(
+            f"[VERIFY_LOC:SANDBOX FALLBACK] No documented simulator behavior for {msisdn}; "
+            "defaulting to UNKNOWN (never assume a confirmed match)."
+        )
     sandbox_payload = {
         "verificationResult": sandbox_entry[1],
         "status_code": sandbox_entry[0],
@@ -323,6 +454,11 @@ def verify_location(
         "latitude": latitude,
         "longitude": longitude,
     }
+    verification_result, geo_extra = _geo_guard(
+        msisdn, latitude, longitude, radius, sandbox_payload.get("verificationResult", "UNKNOWN")
+    )
+    sandbox_payload["verificationResult"] = verification_result
+    sandbox_payload.update(geo_extra)
 
     output_json = _safe_json(sandbox_payload)
     print(f"[VERIFY_LOC:SANDBOX RESULT] Payload: {output_json}")
@@ -333,15 +469,16 @@ def check_roaming_status(msisdn: str) -> str:
     """Queries Nokia CAMARA Device Status APIs to determine if the device is roaming internationally."""
     print(f"\n[ROAMNG] --- EXECUTING check_roaming_status TOOL ---")
     print(f"[ROAMNG] Target MSISDN: {msisdn}")
-    print(f"[ROAMNG] SDK Available: {bool(nac_client)}")
+    print(f"[ROAMNG] SDK Available: {bool(_get_nac_client())}")
 
     # 1. Primary Method: Official Nokia NaC Python SDK
-    if nac_client:
+    client = _get_nac_client()
+    if client:
         try:
             # Confirmed against Nokia's own docs (device-roaming-status page): there is no
             # devices.get(...).get_roaming_status() chain in this SDK. The Device Status
             # roaming check is called directly on the client.
-            roaming_res = nac_client.device_status.retrieve_roaming_status(
+            roaming_res = client.device_status.retrieve_roaming_status(
                 device={"phone_number": msisdn}
             )
 
@@ -375,7 +512,7 @@ def check_roaming_status(msisdn: str) -> str:
             print(f"[ROAMNG:SDK ERROR] Nokia NaC SDK Device Roaming Status check failed: {e}")
 
     # 2. Fallback Method: Direct Nokia CAMARA REST API Call
-    # NOTE: Nokia's public docs only document SDK usage for this endpoint — no REST
+    # Nokia's public docs only document SDK usage for this endpoint — no REST
     # passthrough path is published anywhere we've found for this SDK (same was true for
     # SIM Swap, Location Verification, and QoD). This URL is unverified; confirm it
     # against your actual RapidAPI subscription before trusting it in a live demo.
@@ -412,27 +549,37 @@ def check_roaming_status(msisdn: str) -> str:
     # only these two exact numbers have documented behavior for this API.
     print(f"[ROAMNG:SANDBOX FALLBACK] Executing local sandbox evaluation for {msisdn}")
     if msisdn == "+99999991000":
-        is_roaming = True
+        sandbox_payload = {
+            "roamingStatus": "INTERNATIONAL_ROAMING",
+            "roaming": True,
+            "countryCode": None,
+            "countryIsoCodes": [],
+            "status_code": 200,
+            "source": "Nokia CAMARA Sandbox (local fallback)",
+        }
     elif msisdn == "+99999991001":
-        is_roaming = False
+        sandbox_payload = {
+            "roamingStatus": "DOMESTIC",
+            "roaming": False,
+            "countryCode": None,
+            "countryIsoCodes": [],
+            "status_code": 200,
+            "source": "Nokia CAMARA Sandbox (local fallback)",
+        }
     else:
-        is_roaming = False
+        # No documented simulator behavior — genuinely unknown, not domestic.
+        # `roamingStatus` is deliberately absent so the fail-safe gate escalates
+        # instead of treating an unchecked number as confirmed non-roaming.
         print(
-            f"[ROAMNG:SANDBOX FALLBACK] {msisdn} has no documented simulator behavior — defaulting "
-            f"to DOMESTIC. Use +99999991000 (roaming) or +99999991001 (not roaming) for "
-            f"reliable sandbox results."
+            f"[ROAMNG:SANDBOX FALLBACK] {msisdn} has no documented simulator behavior — "
+            f"reporting UNKNOWN, not DOMESTIC. Use +99999991000 (roaming) or "
+            f"+99999991001 (not roaming) for reliable sandbox results."
         )
-
-    # Nokia's simulator table only documents the roaming boolean for these numbers, not
-    # a specific country code/ISO list — leaving those unset here rather than inventing one.
-    sandbox_payload = {
-        "roamingStatus": "INTERNATIONAL_ROAMING" if is_roaming else "DOMESTIC",
-        "roaming": is_roaming,
-        "countryCode": None,
-        "countryIsoCodes": [],
-        "status_code": 200,
-        "source": "Nokia CAMARA Sandbox (local fallback, undocumented country fields)",
-    }
+        sandbox_payload = {
+            "roaming": None,
+            "status_code": 200,
+            "source": "Nokia CAMARA Sandbox (local fallback, undocumented signal)",
+        }
 
     output_json = _safe_json(sandbox_payload)
     print(f"[ROAMNG:SANDBOX RESULT] Payload: {output_json}")
@@ -456,11 +603,12 @@ def check_device_reachability(msisdn: str) -> str:
         return "UNREACHABLE"
 
     # 1. Primary Method: Official Nokia NaC Python SDK
-    if nac_client:
+    client = _get_nac_client()
+    if client:
         try:
             # Confirmed against Nokia's device-reachability-status docs — the real call is
             # device_status.retrieve_reachability_status(device={...}), not a raw REST POST.
-            reach_res = nac_client.device_status.retrieve_reachability_status(
+            reach_res = client.device_status.retrieve_reachability_status(
                 device={"phone_number": msisdn}
             )
 
@@ -487,7 +635,7 @@ def check_device_reachability(msisdn: str) -> str:
             print(f"[DEV_REACH:SDK ERROR] Nokia NaC SDK Device Reachability check failed: {e}")
 
     # 2. Fallback Method: Direct Nokia CAMARA REST API Call
-    # NOTE: as with roaming status, Nokia's public docs only show SDK usage for this
+    # As with roaming status, Nokia's public docs only show SDK usage for this
     # endpoint — no REST passthrough path is published. This URL is unverified; confirm
     # against your own RapidAPI subscription before trusting it in a live demo.
     url = f"{NOKIA_BASE_URL}/device-status/device-reachability-status/v1/retrieve"
@@ -537,7 +685,7 @@ def check_device_reachability(msisdn: str) -> str:
             f"reporting UNKNOWN, not UNREACHABLE. Use one of {list(sandbox_map)} for documented results."
         )
 
-    # Map tri-state reachable -> status accurately: True->derived, False->UNREACHABLE, None->UNKNOWN
+    # Reachable is tri-state: True -> derived status, False -> UNREACHABLE, None -> UNKNOWN
     if is_reachable is True:
         reach_status = _derive_status(connectivity)
     elif is_reachable is False:
@@ -564,12 +712,13 @@ def create_qod_session(
     duration_seconds: int = 3600,
 ) -> str:
     """Requests a Quality-on-Demand session to prioritize bandwidth/latency between a device
-    and an application server for a bounded duration. NOTE: this is QoD, not network slicing —
+    and an application server for a bounded duration. This is QoD, not network slicing —
     it does not provision a dedicated network slice. See Network Slice Management for that."""
     print(f"[QOD] Creating QoD session for {msisdn} -> {service_ip} with profile {profile}")
 
     # 1. Primary Method: Official Nokia NaC Python SDK
-    if nac_client:
+    client = _get_nac_client()
+    if client:
         try:
             # Confirmed live against Nokia's sandbox earlier in this project. Two hard-won
             # details: the field is "ipv4address" (no underscores — Nokia's own docs example
@@ -577,7 +726,7 @@ def create_qod_session(
             # label. QOS_E is the default here (not QOS_L) because auth/step-up traffic is
             # small and latency-sensitive, not bandwidth-hungry like video — same reasoning
             # already applied to the main agent's QoD tool.
-            result = nac_client.qod.create_session_v1(
+            result = client.qod.create_session_v1(
                 application_server={"ipv4address": service_ip},
                 qos_profile=profile,
                 device={"phone_number": msisdn},
@@ -648,11 +797,13 @@ def verify_number(msisdn: str) -> str:
     SIM Swap), which authenticates the number without an SMS OTP."""
     print(f"\n[NUMVER] --- EXECUTING verify_number TOOL ---")
     print(f"[NUMVER] Target MSISDN: {msisdn}")
-    print(f"[NUMVER] SDK Available: {bool(nac_client)} | NV Module: {hasattr(nac_client, 'number_verification') if nac_client else False}")
-    print(f"[NUMVER] NOKIA_API_KEY configured: {'YES' if NOKIA_API_KEY != 'sandbox-key' else 'NO (using sandbox-key)'}")
 
     # 1. Primary Method: Official Nokia NaC Python SDK
-    if nac_client and hasattr(nac_client, "number_verification"):
+    client = _get_nac_client()
+    print(f"[NUMVER] SDK Available: {bool(client)} | NV Module: {hasattr(client, 'number_verification') if client else False}")
+    print(f"[NUMVER] NOKIA_API_KEY configured: {'YES' if NOKIA_API_KEY != 'sandbox-key' else 'NO (using sandbox-key)'}")
+
+    if client and hasattr(client, "number_verification"):
         try:
             # Verified against the installed network-as-code SDK
             # (network_as_code/number_verification): the v0.2 VERIFY method is
@@ -667,7 +818,7 @@ def verify_number(msisdn: str) -> str:
             # request is accepted unless the API key lacks Number Verification
             # entitlement, in which case we degrade to the fallbacks below.
             print(f"[NUMVER] Calling SDK verify_v2 for {msisdn}")
-            verify_result = nac_client.number_verification.verify_v2(
+            verify_result = client.number_verification.verify_v2(
                 request={"phone_number": msisdn}
             )
 
@@ -689,10 +840,10 @@ def verify_number(msisdn: str) -> str:
             traceback.print_exc()
 
     else:
-        if not nac_client:
+        if not client:
             print("[NUMVER] nac_client is None - SDK not initialized")
-        elif not hasattr(nac_client, "number_verification"):
-            print(f"[NUMVER] nac_client has NO number_verification attribute. Available attrs: {[a for a in dir(nac_client) if not a.startswith('_')]}")
+        elif not hasattr(client, "number_verification"):
+            print(f"[NUMVER] nac_client has NO number_verification attribute. Available attrs: {[a for a in dir(client) if not a.startswith('_')]}")
 
     # 2. Fallback Method: Direct Nokia CAMARA REST API Call
     # Nokia NaC's documented Number Verification v2 passthrough. Retain the
@@ -768,7 +919,8 @@ def get_congestion_insights(msisdn: str, lookback_hours: int = 1) -> str:
     print(f"[CONGEST] Target MSISDN: {msisdn} | lookback_hours: {lookback_hours}")
 
     # 1. Primary Method: Official Nokia NaC Python SDK
-    if nac_client and hasattr(nac_client, "congestion_insights"):
+    client = _get_nac_client()
+    if client and hasattr(client, "congestion_insights"):
         try:
             # Verified against the installed network-as-code SDK
             # (network_as_code/congestion_insights): the QUERY method is
@@ -781,7 +933,7 @@ def get_congestion_insights(msisdn: str, lookback_hours: int = 1) -> str:
             #   confidence_level (int, optional).
             start = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
             end = datetime.now(timezone.utc)
-            congestion_results = nac_client.congestion_insights.query(
+            congestion_results = client.congestion_insights.query(
                 device={"phone_number": msisdn}, start=start, end=end
             )
 
@@ -817,7 +969,7 @@ def get_congestion_insights(msisdn: str, lookback_hours: int = 1) -> str:
 
     # 2. Fallback Method: Direct Nokia CAMARA REST API Call
     # CAMARA Congestion Insights v0: POST /congestion-insights/v0/queries
-    # NOTE: unverified passthrough path, same caveat as the other tools.
+    # Unverified passthrough path, same caveat as the other tools.
     url = f"{NOKIA_BASE_URL}/congestion-insights/v0/queries"
     try:
         response = requests.post(
@@ -856,7 +1008,16 @@ def get_congestion_insights(msisdn: str, lookback_hours: int = 1) -> str:
         "+99999991000": "High",
         "+99999991001": "Low",
         "+99999991002": "Medium",
-    }.get(msisdn, "Low")
+    }.get(msisdn)
+    # No documented simulator behaviour: report UNKNOWN rather than guessing Low,
+    # which is contextually honest and (as congestion never flips a clean verdict)
+    # risk-neutral.
+    if sandbox_level is None:
+        sandbox_level = "Unknown"
+        print(
+            f"[CONGEST:SANDBOX FALLBACK] {msisdn} has no documented simulator "
+            "behaviour — reporting Unknown, not Low."
+        )
 
     return _safe_json(
         {
@@ -889,10 +1050,14 @@ def check_number_recycling(msisdn: str, specified_date: str = None) -> str:
         specified_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     # 1. Primary Method: Official Nokia NaC Python SDK
-    if nac_client and hasattr(nac_client, "number_recycling"):
+    client = _get_nac_client()
+    if client and hasattr(client, "number_recycling"):
         try:
-            recycle_result = nac_client.number_recycling.check(
-                phone_number=msisdn, specified_date=specified_date
+            from datetime import date as _date
+
+            sdk_date = _date.fromisoformat(specified_date)
+            recycle_result = client.number_recycling.check(
+                phone_number=msisdn, specified_date=sdk_date
             )
             recycled = getattr(recycle_result, "phoneNumberRecycled", False)
             res = {
@@ -906,7 +1071,9 @@ def check_number_recycling(msisdn: str, specified_date: str = None) -> str:
             print(f"[NUM_RECYCLE:SDK ERROR] Nokia NaC SDK Number Recycling check failed: {e}")
 
     # 2. Fallback Method: Direct CAMARA REST API Call
-    url = f"{NOKIA_BASE_URL}/passthrough/camara/v1/number-recycling/number-recycling/v0.2/check"
+    # Same caveat as the other tools: the REST passthrough below is unverified,
+    # so the SDK-first call above is the trusted tier.
+    url = f"{NOKIA_BASE_URL}/number-recycling/number-recycling/v0.2/check"
     payload = {"phoneNumber": msisdn, "specifiedDate": specified_date}
     try:
         response = requests.post(url, headers=_get_headers(), json=payload, timeout=5)
@@ -923,79 +1090,25 @@ def check_number_recycling(msisdn: str, specified_date: str = None) -> str:
         print(f"[NUM_RECYCLE:REST ERROR] Nokia NaC REST API Number Recycling failed: {e}")
 
     # 3. Fallback Method: Simulated Sandbox Data
-    # Documented: fraud subscriber (+99999991000) shows recycled
+    # Documented: fraud subscriber (+99999991000) shows recycled, the clean
+    # subscriber (+99999991001) is not. Undocumented numbers report None —
+    # "not recycled" is a clean claim we must not assert without evidence.
     print(f"[NUM_RECYCLE:SANDBOX FALLBACK] Executing local sandbox evaluation for {msisdn}")
-    recycled = msisdn == "+99999991000"
-
-    return _safe_json(
-        {
-            "phoneNumberRecycled": recycled,
-            "status_code": 200,
-            "source": "Nokia CAMARA Sandbox (local fallback)",
-        }
-    )
-
-
-@tool
-def check_device_swap(msisdn: str, max_age: int = 120) -> str:
-    """Queries the Nokia NaC CAMARA Device Swap API to detect if the
-    device associated with a phone number has changed recently.
-    This is an alternative signal to SIM swap — detects device change
-    without SIM change (e.g., eSIM provisioning, device cloning)."""
-    print(f"\n[DEV_SWAP] --- EXECUTING check_device_swap TOOL ---")
-    print(f"[DEV_SWAP] Target MSISDN: {msisdn} | max_age: {max_age} hours")
-
-    # 1. Primary Method: Official Nokia NaC Python SDK
-    if nac_client and hasattr(nac_client, "device_swap"):
-        try:
-            swap_result = nac_client.device_swap.check(
-                phone_number=msisdn, max_age=max_age
-            )
-            swapped = getattr(swap_result, "swapped", False)
-            res = {
-                "swapped": swapped,
-                "status_code": 200,
-                "source": "Nokia NaC SDK",
-            }
-            print(f"[DEV_SWAP:SDK SUCCESS] {res}")
-            return _safe_json(res)
-        except Exception as e:
-            print(f"[DEV_SWAP:SDK ERROR] Nokia NaC SDK Device Swap check failed: {e}")
-
-    # 2. Fallback Method: Direct CAMARA REST API Call
-    url = f"{NOKIA_BASE_URL}/passthrough/camara/v1/device-swap/device-swap/v1/check"
-    payload = {"phoneNumber": msisdn, "maxAge": max_age}
-    try:
-        response = requests.post(url, headers=_get_headers(), json=payload, timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            res = {
-                "swapped": data.get("swapped", False),
-                "status_code": 200,
-                "source": "Nokia NaC REST API",
-            }
-            print(f"[DEV_SWAP:REST SUCCESS] {res}")
-            return _safe_json(res)
-    except Exception as e:
-        print(f"[DEV_SWAP:REST ERROR] Nokia NaC REST API Device Swap failed: {e}")
-
-    # 3. Fallback Method: Simulated Sandbox Data
-    # Aligns with SIM swap for the fraud test subscriber
-    print(f"[DEV_SWAP:SANDBOX FALLBACK] Executing local sandbox evaluation for {msisdn}")
     if msisdn == "+99999991000":
-        swapped = True
+        recycled = True
     elif msisdn == "+99999991001":
-        swapped = False
+        recycled = False
     else:
-        swapped = None
+        recycled = None
         print(
-            f"[DEV_SWAP:SANDBOX FALLBACK] {msisdn} has no documented simulator behavior — "
-            f"reporting UNKNOWN, not swapped. Use +99999991000 (swapped) or +99999991001 (clean)."
+            f"[NUM_RECYCLE:SANDBOX FALLBACK] {msisdn} has no documented simulator behavior — "
+            "reporting UNKNOWN, not recycled. Use +99999991000 (recycled) or "
+            "+99999991001 (not recycled) for reliable sandbox results."
         )
 
     return _safe_json(
         {
-            "swapped": swapped,
+            "phoneNumberRecycled": recycled,
             "status_code": 200,
             "source": "Nokia CAMARA Sandbox (local fallback)",
         }

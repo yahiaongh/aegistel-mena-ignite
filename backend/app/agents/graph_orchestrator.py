@@ -3,14 +3,14 @@ import json
 import re
 import time
 import uuid
-from typing import Annotated, Any, Dict, List, Literal, TypedDict
+from typing import Annotated, Any, Dict, List, Literal, TypedDict, Optional
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
-from app.agents.crew_specialists import run_specialist_crew, synthesize_specialist_assessment
+from app.agents.crew_specialists import run_specialist_crew
 from app.agents.memory_agent import memory_engine
 from app.core.config import settings
 from app.schemas.telemetry import (
@@ -45,6 +45,45 @@ class FinalAssessment(BaseModel):
     recommended_action: str = Field(...)
 
 
+class Plan(BaseModel):
+    required: List[str] = Field(default_factory=list)
+    deferred: List[str] = Field(default_factory=list)
+    initial_optional: List[str] = Field(default_factory=list)
+    rationale: str = ""
+    planner_model: str = ""
+    planner_provider: str = ""
+
+
+class SpecialistOpinion(BaseModel):
+    assessment: Dict[str, Any] = Field(default_factory=dict)
+    trace: List[Dict[str, Any]] = Field(default_factory=list)
+    tool_results: List[Dict[str, Any]] = Field(default_factory=list)
+    used_fallback: bool = False
+    raw_output: str = ""
+    providers_reachable: Dict[str, bool] = Field(default_factory=dict)
+    timing: Dict[str, float] = Field(default_factory=dict)
+    qod_recommended: bool = False
+    planning_mode: str = "policy"
+    planner_model: str = ""
+    planner_provider: str = ""
+
+
+class AuditorOpinion(BaseModel):
+    assessment: Dict[str, Any] = Field(default_factory=dict)
+    reasoning: str = ""
+    recommended_action: str = ""
+    needs_more_evidence: bool = False
+    missing_signals: List[str] = Field(default_factory=list)
+    confidence: float = 0.0
+
+
+class VerifierResult(BaseModel):
+    verdict: Dict[str, Any] = Field(default_factory=dict)
+    needs_replan: bool = False
+    replan_rationale: str = ""
+    safety_passed: bool = True
+
+
 class AuditState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
     assessment: FinalAssessment | None
@@ -52,8 +91,21 @@ class AuditState(TypedDict):
     tool_results: List[Dict[str, Any]]
     errors: List[str]
     request_context: Dict[str, Any]
-    specialist_output: Dict[str, Any]
+    specialist_output: SpecialistOpinion
+    auditor_output: AuditorOpinion
+    verifier_output: VerifierResult
+    plan: Plan
+    plan_version: int
+    tool_results: List[Dict[str, Any]]
+    errors: List[str]
+    request_context: Dict[str, Any]
     progress_callback: Any | None
+    audit_id: str
+    tenant_id: str
+    llm_budget_s: float
+    plan_version: int = 0
+    needs_replan: bool = False
+    replan_rationale: str = ""
 
 
 SYSTEM_PROMPT = """You are AegisTel's Autonomous Telecom Fraud Detection Agent.
@@ -67,8 +119,8 @@ Guidelines:
 
 
 def _compute_confidence(tool_results: list[dict]) -> float:
-    """Compute a simple per-request confidence based on how many tools returned
-    live Nokia SDK data versus fallbacks. Returns a value in [0.5, 0.9]."""
+    """Per-request confidence from how many tools returned live Nokia SDK data
+    versus fallbacks. Lands in [0.5, 0.9]."""
     live_count = sum(1 for r in tool_results if r.get("source") == "Nokia NaC SDK")
     total = len(tool_results) or 1
     base = 0.5 + 0.4 * (live_count / total)
@@ -76,13 +128,13 @@ def _compute_confidence(tool_results: list[dict]) -> float:
 
 
 def _tool_succeeded(item: Dict[str, Any]) -> bool:
-    """Derive a tool call's success from its result payload, so the evidence
-    trail stays internally consistent: a payload carrying an error or a
-    failing HTTP status is reported as a failure, never as a clean success.
+    """Success is derived from the result payload, keeping the evidence trail
+    internally consistent: a payload with an `error` field or a failing HTTP
+    status counts as a failed tool call, never a clean success.
 
-    Success requires BOTH: no `error` field AND an HTTP status below 400.
-    Payloads without a status_code (pure result objects) are presumed success
-    when they carry no error.
+    Needs BOTH: no `error` field AND an HTTP status below 400. Payloads
+    without a status_code (pure result objects) are presumed successful when
+    they carry no error.
     """
     if item.get("error"):
         return False
@@ -126,7 +178,7 @@ async def crew_node(state: AuditState) -> Dict[str, Any]:
         state.get("memory_context", []),
         state.get("tool_results", []),
         state.get("progress_callback"),
-        llm_time_budget_s=float(state.get("llm_budget_s", 14.0)),
+        llm_time_budget_s=float(state.get("llm_budget_s", 40.0)),
     )
     assessment = FinalAssessment(**specialist_output["assessment"])
     return {
@@ -138,11 +190,103 @@ async def crew_node(state: AuditState) -> Dict[str, Any]:
     }
 
 
-builder = StateGraph(AuditState)
-builder.add_node("crew", crew_node)
-builder.add_edge(START, "crew")
-builder.add_edge("crew", END)
-aegis_graph = builder.compile()
+async def verifier_node(state: AuditState) -> Dict[str, Any]:
+    """Safety gate for the LLM-driven verdict.
+
+    Nothing self-contradictory leaves the graph: APPROVED with a HIGH/CRITICAL
+    risk score is ambiguous, so we coerce it to MANUAL_REVIEW (a human resolves
+    it) rather than silently favoring one of the two opinions. The graph stays
+    acyclic — there is no replan loop back into another pass.
+    """
+    specialist_output = state.get("specialist_output", {})
+    assessment = (
+        specialist_output.assessment
+        if isinstance(specialist_output, SpecialistOpinion)
+        else specialist_output.get("assessment", {})
+    )
+
+    status = assessment.get("status", "UNKNOWN")
+    risk_score = assessment.get("risk_score", "UNKNOWN")
+
+    if status == "APPROVED" and risk_score in {"HIGH", "CRITICAL"}:
+        forced = dict(assessment)
+        forced["status"] = "MANUAL_REVIEW"
+        forced["reasoning"] = (
+            f"{forced.get('reasoning', '')} Verdict coherence gate: the assessment was "
+            f"APPROVED with a {risk_score} risk score, which contradicts auto-approval. "
+            "Routing to manual review so a human resolves the ambiguity."
+        ).strip()
+        forced["recommended_action"] = "Hold settlement and complete manual review of the contradictory verdict."
+        assessment = forced
+
+    return {
+        "verifier_output": VerifierResult(
+            verdict=assessment,
+            needs_replan=False,
+            replan_rationale="",
+            safety_passed=True,
+        )
+    }
+
+
+async def finalizer_node(state: AuditState) -> Dict[str, Any]:
+    """Assemble the final response."""
+    verifier_output = state.get("verifier_output", {})
+    specialist_output = state.get("specialist_output", {})
+    auditor_output = state.get("auditor_output", {})
+    
+    assessment_data = verifier_output.verdict if isinstance(verifier_output, VerifierResult) else state.get("specialist_output", {}).get("assessment", {})
+    
+    if not assessment_data and isinstance(specialist_output, SpecialistOpinion):
+        assessment_data = specialist_output.assessment
+    
+    assessment = FinalAssessment(**assessment_data) if isinstance(assessment_data, dict) else assessment_data
+    
+    progress_callback = state.get("progress_callback")
+    if progress_callback is not None:
+        try:
+            progress_callback({
+                "type": "crew:done",
+                "status": "completed",
+            })
+        except Exception:
+            pass
+    
+    return {
+        "assessment": assessment,
+        "specialist_output": specialist_output,
+        "auditor_output": auditor_output,
+        "verifier_output": verifier_output,
+    }
+
+
+def _build_multi_node_graph() -> StateGraph:
+    """Build the agentic decision graph.
+
+    crew -> verifier -> finalizer
+
+    - crew: the specialist crew runs the whole loop internally — LLM-plans the
+      CAMARA tool calls (bounded and signal-aware), executes them against live
+      Nokia NaC telemetry, expands to deferred signals when risk/value justify
+      it, and returns an LLM-adjudicated assessment. With no provider reachable
+      it falls back to the deterministic rule engine, which yields the same
+      verdict the legacy one-shot path produced.
+    - verifier: refuses to emit a self-contradictory verdict (see above).
+    - finalizer: assembles the immutable FinalAssessment.
+    """
+    builder = StateGraph(AuditState)
+    builder.add_node("crew", crew_node)
+    builder.add_node("verifier", verifier_node)
+    builder.add_node("finalizer", finalizer_node)
+    builder.add_edge(START, "crew")
+    builder.add_edge("crew", "verifier")
+    builder.add_edge("verifier", "finalizer")
+    builder.add_edge("finalizer", END)
+    return builder.compile()
+
+
+# Build the multi-node graph
+aegis_graph = _build_multi_node_graph()
 
 
 # Documented Nokia NaC sandbox simulator subscribers (tools.py / README). These
@@ -233,21 +377,46 @@ async def execute_audit(request: AuditRequest, progress_callback: Any | None = N
         "tool_results": [],
         "errors": [],
         "request_context": request_context,
-        "specialist_output": {},
+        "specialist_output": SpecialistOpinion(),
+        "auditor_output": AuditorOpinion(),
+        "verifier_output": VerifierResult(),
+        "plan": Plan(),
+        "plan_version": 0,
+        "tool_results": [],
+        "errors": [],
+        "request_context": request_context,
         "progress_callback": progress_callback,
-        "llm_budget_s": 14.0,
+        "audit_id": str(audit_id),
+        "tenant_id": tenant_id,
+        "llm_budget_s": 40.0,
+        "plan_version": 0,
+        "needs_replan": False,
+        "replan_rationale": "",
     }
     final_state = await aegis_graph.ainvoke(initial_input)
     timing["crew_ms"] = round((time.monotonic() - t0) * 1000, 1) - timing["memory_retrieve_ms"]
-    specialist_output = final_state.get("specialist_output", {}) if isinstance(final_state.get("specialist_output"), dict) else {}
-    assessment = FinalAssessment(**final_state["assessment"].model_dump()) if final_state.get("assessment") else FinalAssessment(**specialist_output.get("assessment", {}))
+    specialist_output = final_state.get("specialist_output", {})
+    if isinstance(specialist_output, SpecialistOpinion):
+        specialist_output_dict = {
+            "assessment": specialist_output.assessment,
+            "trace": specialist_output.trace,
+            "tool_results": specialist_output.tool_results,
+            "used_fallback": specialist_output.used_fallback,
+            "raw_output": specialist_output.raw_output,
+            "qod_recommended": specialist_output.qod_recommended,
+            "providers_reachable": {},
+            "timing": {},
+        }
+    else:
+        specialist_output_dict = specialist_output if isinstance(specialist_output, dict) else {}
+    assessment = FinalAssessment(**final_state["assessment"].model_dump()) if final_state.get("assessment") else FinalAssessment(**specialist_output_dict.get("assessment", {}))
 
     # QoD is a recommendation only. The decision pipeline never provisions a QoD
     # session (that would borrow a chargeable network resource before any
     # consent). We surface the recommendation to the UI; provisioning happens
     # through the explicit, authenticated, policy-gated confirm endpoint.
     # Recommend QoD for high-risk verdicts that warrant step-up verification.
-    qod_recommended = bool(specialist_output.get("qod_recommended")) or assessment.status in {"STEP_UP_REQUIRED", "BLOCKED"}
+    qod_recommended = bool(specialist_output_dict.get("qod_recommended")) or assessment.status in {"STEP_UP_REQUIRED", "BLOCKED"}
     if progress_callback is not None:
         try:
             progress_callback(
@@ -270,18 +439,24 @@ async def execute_audit(request: AuditRequest, progress_callback: Any | None = N
         )
     ]
 
-    specialist_trace = [
-        AgentTraceItem(
-            agent=item["agent"],
-            action=item["action"],
-            thought=item["thought"],
-            status=item["status"],
-            detail=item["detail"],
-            model=item.get("model"),
-            provider=item.get("provider"),
+    specialist_trace = []
+    specialist_output_for_trace = final_state.get("specialist_output", {})
+    if isinstance(specialist_output_for_trace, SpecialistOpinion):
+        trace_data = specialist_output_for_trace.trace
+    else:
+        trace_data = specialist_output_for_trace.get("trace", [])
+    for item in trace_data:
+        specialist_trace.append(
+            AgentTraceItem(
+                agent=item["agent"],
+                action=item["action"],
+                thought=item["thought"],
+                status=item["status"],
+                detail=item["detail"],
+                model=item.get("model"),
+                provider=item.get("provider"),
+            )
         )
-        for item in specialist_output.get("trace", [])
-    ]
     if specialist_trace:
         trace.extend(specialist_trace)
 
@@ -380,16 +555,16 @@ async def execute_audit(request: AuditRequest, progress_callback: Any | None = N
         reasoning=assessment.reasoning,
         recommended_action=assessment.recommended_action,
         agent_trace=trace,
-        used_fallback=specialist_output.get("used_fallback", False),
-        raw_output=specialist_output.get("raw_output"),
+        used_fallback=specialist_output.used_fallback if isinstance(specialist_output, SpecialistOpinion) else specialist_output.get("used_fallback", False),
+        raw_output=specialist_output.raw_output if isinstance(specialist_output, SpecialistOpinion) else specialist_output.get("raw_output"),
         diagnostics={
             "timing_ms": timing,
-            "phases_ms": specialist_output.get("timing", {}),
+            "phases_ms": specialist_output.timing if isinstance(specialist_output, SpecialistOpinion) else specialist_output.get("timing", {}),
             "providers_configured": {
                 "groq": bool(settings.GROQ_API_KEY),
                 "gemini": bool(settings.GOOGLE_API_KEY),
                 "openrouter": bool(settings.OPENROUTER_API_KEY),
             },
-            "providers_reachable": specialist_output.get("providers_reachable", {}),
+            "providers_reachable": specialist_output.providers_reachable if isinstance(specialist_output, SpecialistOpinion) else specialist_output.get("providers_reachable", {}),
         },
     )

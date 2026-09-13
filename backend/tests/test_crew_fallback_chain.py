@@ -215,7 +215,7 @@ def test_risk_recommends_qod_but_never_provisions(monkeypatch):
     def fake_run_tool_payload(tool_name, tool_callable, **kwargs):
         tool_names.append(tool_name)
         if tool_name == "check_sim_swap":
-            return {"name": tool_name, "swapped": True, "source": "sandbox"}
+            return {"name": tool_name, "swapped": False, "source": "sandbox"}
         if tool_name == "verify_location":
             return {"name": tool_name, "verificationResult": "FALSE", "radius_meters": 5000, "source": "sandbox"}
         if tool_name == "check_roaming_status":
