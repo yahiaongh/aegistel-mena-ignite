@@ -24,7 +24,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 > The backend loads keys from a single `.env` file at the **repo root** (see
 > `config.py`). Copy `.env.example` to `.env` and fill in your own provider keys
-> (they are never committed). See `E2E_TEST.md` → "Prerequisites" for the
+> (they are never committed). See `LOCAL_E2E_TEST.md` → "Prerequisites" for the
 > mandatory/optional key table.
 
 Frontend (see `frontend/`):

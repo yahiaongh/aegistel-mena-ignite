@@ -272,13 +272,13 @@ aegistel-mena-ignite/
 ├── docker-compose.yml   # two-service local stack
 ├── render.yaml          # Render blueprint (also picked up by .github/ keepalive)
 ├── start.sh
-├── E2E_TEST.md          # the full run + verify guide (one-shot curl battery + UI scenarios)
+├── LOCAL_E2E_TEST.md    # the full run + verify guide (one-shot curl battery + UI scenarios)
 └── DEPLOYMENTS.md       # deployment options + env vars
 ```
 
 ## Running & testing
 
-For the full picture (every API check, the frontend scenarios, secrets needed) see **[E2E_TEST.md](E2E_TEST.md)** and **[DEPLOYMENTS.md](DEPLOYMENTS.md)**. The essentials:
+For the full picture (every API check, the frontend scenarios, secrets needed) see **[LOCAL_E2E_TEST.md](LOCAL_E2E_TEST.md)** and **[DEPLOYMENTS.md](DEPLOYMENTS.md)**. The essentials:
 
 > **Reviewers/judges:** AegisTel needs **provider API keys you create yourself** (free tiers are fine) — they are never committed. Copy `.env.example` to `.env` and fill the keys. Minimum for a live verdict: one LLM key and `GOOGLE_API_KEY`; the `QDRANT_URL` + `QDRANT_API_KEY` pair enables the durable audit-history/feedback mirror when `AEGISTEL_LIVE_MEMORY=1`.
 
